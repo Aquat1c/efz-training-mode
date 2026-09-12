@@ -1,5 +1,7 @@
 #include "../include/game/character_hotswap.h"
 #include "../include/game/character_hotswap_transition.h"
+#include "game/character_hotswap_frontend.h"
+#include "runtime/practice_runtime.h"
 
 #include "../include/core/constants.h"
 #include "../include/core/logger.h"
@@ -25,6 +27,12 @@
 
 namespace CharacterHotswap {
 namespace {
+LoadingRequestOwner s_loadingRequest;
+void PublishLoadingRequest() {
+    EfzTmIdentityV1 identity{};
+    (void)Practice::CaptureCurrentPracticeIdentity(identity);
+    (void)s_loadingRequest.Publish(identity);
+}
 
 constexpr uintptr_t RVA_SCREEN_TABLE = 0x00390110;
 constexpr uintptr_t RVA_INITIALIZE_SELECTED_CHARACTER = 0x003586B0;
@@ -90,10 +98,13 @@ using CleanupPlayerObjectFn = unsigned short*(__thiscall*)(unsigned short* chara
 enum class RequestState : uint8_t {
     Idle = 0,
     PendingExitRequest,
+    IssuingExitRequest,
     AwaitingCharacterSelect,
     PendingApply,
+    ApplyingSelections,
     AwaitingLoading,
     AwaitingMatch,
+    Completing,
     Failed,
 };
 
@@ -152,6 +163,7 @@ struct CustomPaletteLookupResult {
 };
 
 std::atomic<RequestState> s_state{RequestState::Idle};
+std::atomic<uintptr_t> s_queuedExitBattle{0},s_queuedExitGameSystem{0};
 std::atomic<UiStatus> s_uiStatus{UiStatus::Ready};
 std::atomic<int> s_requestedP1Char{CHAR_ID_AKANE};
 std::atomic<int> s_requestedP2Char{CHAR_ID_AKIKO};
@@ -176,6 +188,8 @@ std::atomic<bool> s_directAbortAfterHandoff{false};
 // Character-Select reloads use the same Loading hook but do not own the direct
 // bootstrap state. Keep their skipped-Loading-phase receipt separate so it can
 // never masquerade as a direct Battle handoff.
+std::atomic<bool> s_nativeFrontendInstalled{false};
+std::atomic<bool> s_awaitNativeCompletion{false};
 std::atomic<bool> s_selectorLoadingHandoffComplete{false};
 std::atomic<bool> s_completedReceiptAvailable{false};
 std::atomic<uint32_t> s_completedReceiptGeneration{0};
@@ -315,8 +329,10 @@ const char* RequestStateName(RequestState state) {
     switch (state) {
         case RequestState::Idle:                    return "Idle";
         case RequestState::PendingExitRequest:      return "PendingExitRequest";
+        case RequestState::IssuingExitRequest:      return "IssuingExitRequest";
         case RequestState::AwaitingCharacterSelect: return "AwaitingCharacterSelect";
         case RequestState::PendingApply:            return "PendingApply";
+        case RequestState::ApplyingSelections:      return "ApplyingSelections";
         case RequestState::AwaitingLoading:         return "AwaitingLoading";
         case RequestState::AwaitingMatch:           return "AwaitingMatch";
         case RequestState::Failed:                  return "Failed";
@@ -598,6 +614,20 @@ void LogPaletteSelectionSnapshot(const char* source,
         oss << " d=" << Hex(contextD);
     }
     LogOut(oss.str(), true);
+}
+
+bool CaptureQueuedBattleExit(bool fromMatch) {
+    s_queuedExitBattle.store(0,std::memory_order_relaxed);
+    s_queuedExitGameSystem.store(0,std::memory_order_relaxed);
+    if(!fromMatch)return true;
+    if(!EnsureFrontendControlHooksInstalled())return false;
+    const uintptr_t base=GetEFZBase();uintptr_t battle=0,gameSystem=0;uint8_t screen=255;
+    if(!base || !SafeReadMemory(base+EFZ_BASE_OFFSET_SCREEN_STATE,&screen,sizeof(screen)) || screen!=SCREEN_BATTLE ||
+       !SafeReadMemory(base+RVA_SCREEN_TABLE+4*SCREEN_BATTLE,&battle,sizeof(battle)) || !battle ||
+       !SafeReadMemory(battle+0x1c,&gameSystem,sizeof(gameSystem)) || !gameSystem)return false;
+    s_queuedExitGameSystem.store(gameSystem,std::memory_order_relaxed);
+    s_queuedExitBattle.store(battle,std::memory_order_relaxed);
+    return true;
 }
 
 void SetState(RequestState nextState, UiStatus nextStatus, const char* reason) {
@@ -1148,6 +1178,9 @@ bool PracticeLoadingIsReadyForDirectBootstrap(int* loadingContext) {
 }
 
 char __fastcall HookedUpdateLoadingScreen(int* loadingContext, void* /*edx*/) {
+    auto execution=MinHookUtils::EnterExecution(MinHookUtils::TicketFor<&HookedUpdateLoadingScreen>());
+    if (!execution.Admitted()) return s_originalUpdateLoadingScreen
+        ? s_originalUpdateLoadingScreen(loadingContext) : static_cast<char>(SCREEN_CHARACTER_SELECT);
     DirectBootstrapState directState =
         s_directBootstrapState.load(std::memory_order_acquire);
     const auto directAction =
@@ -1300,7 +1333,7 @@ char __fastcall HookedUpdateLoadingScreen(int* loadingContext, void* /*edx*/) {
     return nextScreen;
 }
 
-bool SehApplySelections(int p1CharId,
+bool SehApplySelections(uintptr_t capturedContext,uintptr_t capturedGameSystem,int p1CharId,
                         int p2CharId,
                         int stageId,
                         int p1ColorIndex,
@@ -1319,6 +1352,7 @@ bool SehApplySelections(int p1CharId,
         if (!ResolveCharacterSelectContext(outResult.screenContext, outResult.gameSystem)) {
             return false;
         }
+        if(capturedContext && (outResult.screenContext!=capturedContext || outResult.gameSystem!=capturedGameSystem))return false;
 
         // Prevent a held title/menu input from racing the synthetic selection
         // on the same frame. Character Select repolls these bytes normally on
@@ -1442,9 +1476,67 @@ void LogQueuedRequest(GamePhase phase,
     LogOut(oss.str(), true);
 }
 
-void CompleteReload(GamePhase currentPhase, bool publishReceipt = true) {
+void ApplyQueuedSelections(uintptr_t capturedContext,uintptr_t capturedGameSystem) {
+    auto expected=RequestState::PendingApply;
+    if(!s_state.compare_exchange_strong(expected,RequestState::ApplyingSelections,std::memory_order_acq_rel))return;
+            {
+                RawApplyResult result{};
+                const int p1CharId = s_requestedP1Char.load(std::memory_order_relaxed);
+                const int p2CharId = s_requestedP2Char.load(std::memory_order_relaxed);
+                const int p1ColorIndex = s_requestedP1Color.load(std::memory_order_relaxed);
+                const int p2ColorIndex = s_requestedP2Color.load(std::memory_order_relaxed);
+                const bool p1UseCustomPalette = s_requestedP1CustomPalette.load(std::memory_order_relaxed) != 0;
+                const bool p2UseCustomPalette = s_requestedP2CustomPalette.load(std::memory_order_relaxed) != 0;
+                const int stageId = s_requestedStage.load(std::memory_order_relaxed);
+                if (!SehApplySelections(capturedContext,capturedGameSystem,p1CharId,
+                                        p2CharId,
+                                        stageId,
+                                        p1ColorIndex,
+                                        p2ColorIndex,
+                                        p1UseCustomPalette,
+                                        p2UseCustomPalette,
+                                        result)) {
+                    std::ostringstream oss;
+                    oss << "[HOTSWAP] apply failed"
+                        << " seh=" << result.sehCode
+                        << " cs=" << Hex(result.screenContext)
+                        << " gs=" << Hex(result.gameSystem)
+                        << " slot1=" << Hex(result.p1SlotStorage)
+                        << " slot2=" << Hex(result.p2SlotStorage);
+                    LogOut(oss.str(), true);
+                    FailRequest("failed to write character select state", GamePhase::CharacterSelect);
+                    return;
+                }
+
+                std::ostringstream oss;
+                oss << "[HOTSWAP] apply succeeded"
+                    << " cs=" << Hex(result.screenContext)
+                    << " gs=" << Hex(result.gameSystem)
+                    << " p1Obj=" << Hex(result.p1Character)
+                    << " p2Obj=" << Hex(result.p2Character)
+                    << " stage=" << stageId
+                    << " palette=" << (p1ColorIndex + 1)
+                    << "/" << (p2ColorIndex + 1)
+                    << " custom=" << (p1UseCustomPalette ? 1 : 0)
+                    << "/" << (p2UseCustomPalette ? 1 : 0)
+                    << " readbackPalette=" << (static_cast<int>(result.p1ColorReadback) + 1)
+                    << "/" << (static_cast<int>(result.p2ColorReadback) + 1)
+                    << " readbackCustom=" << result.p1CustomFlagReadback
+                    << "/" << result.p2CustomFlagReadback;
+                LogOut(oss.str(), true);
+            }
+            SetState(RequestState::AwaitingLoading, UiStatus::WaitingLoading, "selections injected into character select");
+            return;
+}
+
+void CompleteReload(GamePhase currentPhase, bool publishReceipt = true, uintptr_t capturedGameSystem = 0) {
+    auto expected=s_state.load(std::memory_order_acquire);
+    if(expected!=RequestState::AwaitingLoading && expected!=RequestState::AwaitingMatch &&
+       !(expected==RequestState::Failed && s_directAbortAfterHandoff.load(std::memory_order_acquire)))return;
+    if(!s_state.compare_exchange_strong(expected,RequestState::Completing,std::memory_order_acq_rel))return;
+    s_loadingRequest.Clear();
     const int requestedBgmTrack = s_requestedBgmTrack.load(std::memory_order_relaxed);
-    const uintptr_t gameStatePtr = GetGameStatePtr();
+    const uintptr_t gameStatePtr = capturedGameSystem?capturedGameSystem:GetGameStatePtr();
     {
         std::ostringstream oss;
         oss << "[HOTSWAP] completing reload"
@@ -1484,6 +1576,7 @@ void CompleteReload(GamePhase currentPhase, bool publishReceipt = true) {
     LogOut("[HOTSWAP] applied immediate session reset before lifecycle resync", true);
     RequestRuntimeLifecycleResync("character hotswap reload complete");
     LogOut("[HOTSWAP] reload completed and lifecycle resync requested", true);
+    publishReceipt=publishReceipt && !s_directAbortAfterHandoff.load(std::memory_order_acquire);
     if (publishReceipt) PublishCompletedReceipt();
     else InvalidateCompletedReceipt();
     s_selectorLoadingHandoffComplete.store(false, std::memory_order_release);
@@ -1496,17 +1589,42 @@ void CompleteReload(GamePhase currentPhase, bool publishReceipt = true) {
                      std::memory_order_release);
     s_waitTicks.store(0, std::memory_order_relaxed);
     s_lastActivePhase = currentPhase;
+    s_awaitNativeCompletion.store(false,std::memory_order_release);
 }
 
 } // namespace
 
+uint32_t CaptureLoadingRequest(const EfzTmIdentityV1& identity) {
+    return s_loadingRequest.Capture(identity);
+}
+void ConsumeLoadingRequest(const EfzTmIdentityV1& identity,uint32_t ticket,uint32_t nativeResult,uint32_t acceptedResult) {
+    (void)s_loadingRequest.Consume(identity,ticket,nativeResult,acceptedResult,[](LoadingReturn result,const EfzTmIdentityV1& identity) {
+        // No native reads, initialization, completion receipt or WorkLease.
+        // A canceled/failed transaction cannot be revived by this return.
+        auto expected=RequestState::AwaitingLoading;
+        if(result==LoadingReturn::BattleTransferred) {
+            // The installed native completed-init callback owns this first
+            // world. Reloads retain legacy completion until their retire/attach
+            // transaction is enabled; no old-world identity is repurposed.
+            if(!identity.battleWorld && s_nativeFrontendInstalled.load(std::memory_order_acquire))
+                s_awaitNativeCompletion.store(true,std::memory_order_release);
+            if(s_state.compare_exchange_strong(expected,RequestState::AwaitingMatch,std::memory_order_acq_rel)) {
+                s_uiStatus.store(UiStatus::WaitingMatch,std::memory_order_release);
+                s_waitTicks.store(0,std::memory_order_relaxed);
+            }
+        } else if(result==LoadingReturn::RedirectedTransfer) {
+            if(s_state.compare_exchange_strong(expected,RequestState::Failed,std::memory_order_acq_rel) ||
+               (expected=RequestState::AwaitingMatch,s_state.compare_exchange_strong(expected,RequestState::Failed,std::memory_order_acq_rel))) {
+                s_directAbortAfterHandoff.store(true,std::memory_order_release);
+                s_uiStatus.store(UiStatus::Failed,std::memory_order_release);
+            }
+        }
+    });
+}
+
 bool InstallDirectPracticeBootstrap() {
     if (s_directBootstrapInstalled.load(std::memory_order_acquire)) {
         return true;
-    }
-    if (s_directBootstrapCleanupIncomplete.load(std::memory_order_acquire)) {
-        LogOut("[HOTSWAP][DIRECT] install blocked after incomplete prior hook cleanup", true);
-        return false;
     }
 
     const uintptr_t base = GetEFZBase();
@@ -1515,6 +1633,8 @@ bool InstallDirectPracticeBootstrap() {
     }
 
     const uintptr_t updateTarget = base + RVA_UPDATE_LOADING_SCREEN;
+    if (s_updateLoadingScreenTarget!=updateTarget &&
+        MinHookUtils::HasOwnedTarget(reinterpret_cast<void*>(s_updateLoadingScreenTarget))) return false;
     const uintptr_t createTarget = base + RVA_CREATE_CHARACTER_FOR_PLAYER;
     const uintptr_t cleanupTarget = base + RVA_CLEANUP_PLAYER_OBJECT;
     static const uint8_t kExpectedUpdate[] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x4C};
@@ -1523,8 +1643,9 @@ bool InstallDirectPracticeBootstrap() {
     uint8_t updateBytes[sizeof(kExpectedUpdate)] = {};
     uint8_t createBytes[sizeof(kExpectedCreate)] = {};
     uint8_t cleanupBytes[sizeof(kExpectedCleanup)] = {};
-    if (!SafeReadMemory(updateTarget, updateBytes, sizeof(updateBytes))
-        || std::memcmp(updateBytes, kExpectedUpdate, sizeof(kExpectedUpdate)) != 0
+    if ((!MinHookUtils::HasOwnedTarget(reinterpret_cast<void*>(updateTarget)) &&
+         (!SafeReadMemory(updateTarget, updateBytes, sizeof(updateBytes)) ||
+          std::memcmp(updateBytes, kExpectedUpdate, sizeof(kExpectedUpdate)) != 0))
         || !SafeReadMemory(createTarget, createBytes, sizeof(createBytes))
         || std::memcmp(createBytes, kExpectedCreate, sizeof(kExpectedCreate)) != 0
         || !SafeReadMemory(cleanupTarget, cleanupBytes, sizeof(cleanupBytes))
@@ -1539,11 +1660,10 @@ bool InstallDirectPracticeBootstrap() {
                                   reinterpret_cast<void**>(&s_originalUpdateLoadingScreen),
                                   "[HOTSWAP][DIRECT]",
                                   "updateLoadingScreen",
-                                  &alreadyCreated)
-        || alreadyCreated
+                                  &alreadyCreated, &MinHookUtils::TicketFor<&HookedUpdateLoadingScreen>())
         || !s_originalUpdateLoadingScreen) {
         LogOut("[HOTSWAP][DIRECT] Loading hook is already owned or unavailable; selector fallback retained", true);
-        s_originalUpdateLoadingScreen = nullptr;
+        (void)PracticeHooks::ReleaseRetiredOriginal(MinHookUtils::OwnedHooks(), updateTarget, s_originalUpdateLoadingScreen);
         return false;
     }
     if (!MinHookUtils::EnableHook(reinterpret_cast<void*>(updateTarget),
@@ -1587,8 +1707,7 @@ void UninstallDirectPracticeBootstrap() {
         LogOut("[HOTSWAP][DIRECT] uninstall deferred while native Loading callback is executing", true);
         return;
     }
-    if (s_directBootstrapInstalled.load(std::memory_order_acquire) &&
-        s_updateLoadingScreenTarget) {
+    if (s_updateLoadingScreenTarget) {
         (void)MinHookUtils::DisableHook(
             reinterpret_cast<void*>(s_updateLoadingScreenTarget),
             "[HOTSWAP][DIRECT]", "updateLoadingScreen");
@@ -1665,6 +1784,7 @@ bool QueueDirectPracticeLoad(int p1SelectId,
         return false;
     }
 
+    if(!CaptureQueuedBattleExit(fromMatch))return false;
     PaletteSelection paletteSelection = requestedPaletteSelection;
     SanitizeRequestedPaletteSelection(p1SelectId, p2SelectId, paletteSelection);
     InvalidateCompletedReceipt();
@@ -1682,6 +1802,7 @@ bool QueueDirectPracticeLoad(int p1SelectId,
     // Loading hook and phase monitor cannot pair this request with state from a
     // prior handoff.
     s_selectorLoadingHandoffComplete.store(false, std::memory_order_release);
+    PublishLoadingRequest();
     s_directBootstrapState.store(DirectBootstrapState::Armed,
                                  std::memory_order_release);
     s_directAbortAfterHandoff.store(false, std::memory_order_release);
@@ -1715,10 +1836,17 @@ bool IsDirectPracticeLoadPending() {
 }
 
 void CancelDirectPracticeLoad(const char* reason) {
+    // Completion owns the request tuple until its native side effects and
+    // receipt publication finish. Cancellation cannot expose a new queue here.
+    if(s_state.load(std::memory_order_acquire)==RequestState::Completing) {
+        s_directAbortAfterHandoff.store(true,std::memory_order_release);
+        return;
+    }
     const DirectBootstrapState previousState =
         s_directBootstrapState.load(std::memory_order_acquire);
     const bool deferred = previousState == DirectBootstrapState::Entered ||
                           previousState == DirectBootstrapState::BattleHandoff;
+    if (!deferred && previousState != DirectBootstrapState::Idle) s_loadingRequest.Clear();
     if (deferred) {
         s_directAbortAfterHandoff.store(true, std::memory_order_release);
     } else {
@@ -1843,6 +1971,7 @@ bool QueueReload(int p1SelectId, int p2SelectId, int stageId, const PaletteSelec
         return false;
     }
 
+    if(!CaptureQueuedBattleExit(currentPhase==GamePhase::Match))return false;
     PaletteSelection paletteSelection = requestedPaletteSelection;
     SanitizeRequestedPaletteSelection(p1SelectId, p2SelectId, paletteSelection);
     InvalidateCompletedReceipt();
@@ -1860,6 +1989,7 @@ bool QueueReload(int p1SelectId, int p2SelectId, int stageId, const PaletteSelec
                                  std::memory_order_release);
     s_directAbortAfterHandoff.store(false, std::memory_order_release);
 
+    PublishLoadingRequest();
     LogQueuedRequest(currentPhase, currentMode, p1SelectId, p2SelectId, stageId, bgmTrack, paletteSelection);
 
     if (currentPhase == GamePhase::Match) {
@@ -1871,8 +2001,52 @@ bool QueueReload(int p1SelectId, int p2SelectId, int stageId, const PaletteSelec
     return true;
 }
 
+void OnSelectorReady(uintptr_t selectorContext) {
+    EfzTmIdentityV1 identity{};
+    if(!Practice::CaptureCurrentPracticeIdentity(identity) || !s_loadingRequest.Capture(identity))return;
+    uintptr_t currentContext=0,gameSystem=0;
+    if(!ResolveCharacterSelectContext(currentContext,gameSystem) || currentContext!=selectorContext)return;
+    auto state=s_state.load(std::memory_order_acquire);
+    if(state==RequestState::AwaitingCharacterSelect) {
+        if(!s_state.compare_exchange_strong(state,RequestState::PendingApply,std::memory_order_acq_rel))return;
+        state=RequestState::PendingApply;
+    }
+    if(state!=RequestState::PendingApply)return;
+    // The qualified native join is after selector initialization; the old
+    // monitor's two observations are not used as authority on this path.
+    ApplyQueuedSelections(selectorContext,gameSystem);
+}
+
+uint32_t CaptureInitializedRequest(const EfzTmIdentityV1& identity){return s_loadingRequest.CaptureInitialization(identity);}
+void OnNativeFrontendInstalled(){s_nativeFrontendInstalled.store(true,std::memory_order_release);}
+
+void OnBattleInitialized(const EfzTmIdentityV1& identity,uint32_t ticket,uintptr_t battleContext,uintptr_t gameSystem) {
+    if(!ticket || s_loadingRequest.CaptureInitialization(identity)!=ticket || !battleContext || !gameSystem)return;
+    uintptr_t actualSystem=0;
+    if(!SafeReadMemory(battleContext+0x1c,&actualSystem,sizeof(actualSystem)) || actualSystem!=gameSystem)return;
+    // This call comes from the qualified completed-init join, after the actual
+    // provider receipt. Merely observing screen 3 or Loading AL3 is insufficient.
+    CompleteReload(GamePhase::Match,CompletionReceiptAuthorized(),gameSystem);
+}
+
+void OnBattleFrontendEntry(uintptr_t battleContext) {
+    auto expected=RequestState::PendingExitRequest;
+    if(!s_state.compare_exchange_strong(expected,RequestState::IssuingExitRequest,std::memory_order_acq_rel))return;
+    const bool direct=DirectBootstrapOwnsTransaction();
+    const auto target=direct?FrontendExitTarget::Loading:FrontendExitTarget::CharacterSelect;
+    const bool issued=battleContext==s_queuedExitBattle.load(std::memory_order_relaxed) &&
+        RequestBattleFrontendExit(target,battleContext,s_queuedExitGameSystem.load(std::memory_order_relaxed));
+    expected=RequestState::IssuingExitRequest;
+    const auto next=issued?(direct?RequestState::AwaitingLoading:RequestState::AwaitingCharacterSelect):RequestState::Failed;
+    if(s_state.compare_exchange_strong(expected,next,std::memory_order_acq_rel)) {
+        s_uiStatus.store(issued?(direct?UiStatus::WaitingLoading:UiStatus::Exiting):UiStatus::Failed,std::memory_order_release);
+        s_waitTicks.store(0,std::memory_order_relaxed);
+    }
+}
+
 void Tick(GamePhase currentPhase, GameMode /*currentMode*/) {
     const RequestState state = s_state.load(std::memory_order_acquire);
+    if(s_awaitNativeCompletion.load(std::memory_order_acquire) || state==RequestState::Completing)return;
     if (state == RequestState::Failed &&
         s_directAbortAfterHandoff.load(std::memory_order_acquire) &&
         DirectBootstrapHasBattleHandoff() &&
@@ -1911,21 +2085,11 @@ void Tick(GamePhase currentPhase, GameMode /*currentMode*/) {
                 }
                 return;
             }
-            if (DirectBootstrapOwnsTransaction()) {
-                if (!RequestFrontendExit(FrontendExitTarget::Loading)) {
-                    FailRequest("RequestFrontendExit(Loading) failed", currentPhase);
-                    return;
-                }
-                SetState(RequestState::AwaitingLoading,
-                         UiStatus::WaitingLoading,
-                         "native battle cleanup requested for direct Loading");
-                return;
-            }
-            if (!RequestFrontendExit(FrontendExitTarget::CharacterSelect)) {
-                FailRequest("RequestFrontendExit(CharacterSelect) failed", currentPhase);
-                return;
-            }
-            SetState(RequestState::AwaitingCharacterSelect, UiStatus::Exiting, "frontend exit requested");
+            // The existing native battle wrapper consumes this command. The
+            // monitor never asks its own iteration to initiate old-world exit.
+            return;
+
+        case RequestState::IssuingExitRequest:
             return;
 
         case RequestState::AwaitingCharacterSelect:
@@ -1962,53 +2126,7 @@ void Tick(GamePhase currentPhase, GameMode /*currentMode*/) {
             if (s_characterSelectReadyTicks < 2) {
                 return;
             }
-            {
-                RawApplyResult result{};
-                const int p1CharId = s_requestedP1Char.load(std::memory_order_relaxed);
-                const int p2CharId = s_requestedP2Char.load(std::memory_order_relaxed);
-                const int p1ColorIndex = s_requestedP1Color.load(std::memory_order_relaxed);
-                const int p2ColorIndex = s_requestedP2Color.load(std::memory_order_relaxed);
-                const bool p1UseCustomPalette = s_requestedP1CustomPalette.load(std::memory_order_relaxed) != 0;
-                const bool p2UseCustomPalette = s_requestedP2CustomPalette.load(std::memory_order_relaxed) != 0;
-                const int stageId = s_requestedStage.load(std::memory_order_relaxed);
-                if (!SehApplySelections(p1CharId,
-                                        p2CharId,
-                                        stageId,
-                                        p1ColorIndex,
-                                        p2ColorIndex,
-                                        p1UseCustomPalette,
-                                        p2UseCustomPalette,
-                                        result)) {
-                    std::ostringstream oss;
-                    oss << "[HOTSWAP] apply failed"
-                        << " seh=" << result.sehCode
-                        << " cs=" << Hex(result.screenContext)
-                        << " gs=" << Hex(result.gameSystem)
-                        << " slot1=" << Hex(result.p1SlotStorage)
-                        << " slot2=" << Hex(result.p2SlotStorage);
-                    LogOut(oss.str(), true);
-                    FailRequest("failed to write character select state", currentPhase);
-                    return;
-                }
-
-                std::ostringstream oss;
-                oss << "[HOTSWAP] apply succeeded"
-                    << " cs=" << Hex(result.screenContext)
-                    << " gs=" << Hex(result.gameSystem)
-                    << " p1Obj=" << Hex(result.p1Character)
-                    << " p2Obj=" << Hex(result.p2Character)
-                    << " stage=" << stageId
-                    << " palette=" << (p1ColorIndex + 1)
-                    << "/" << (p2ColorIndex + 1)
-                    << " custom=" << (p1UseCustomPalette ? 1 : 0)
-                    << "/" << (p2UseCustomPalette ? 1 : 0)
-                    << " readbackPalette=" << (static_cast<int>(result.p1ColorReadback) + 1)
-                    << "/" << (static_cast<int>(result.p2ColorReadback) + 1)
-                    << " readbackCustom=" << result.p1CustomFlagReadback
-                    << "/" << result.p2CustomFlagReadback;
-                LogOut(oss.str(), true);
-            }
-            SetState(RequestState::AwaitingLoading, UiStatus::WaitingLoading, "selections injected into character select");
+            ApplyQueuedSelections(0,0);
             return;
 
         case RequestState::AwaitingLoading:

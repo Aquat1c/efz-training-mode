@@ -94,6 +94,7 @@ file(GLOB GUI_SOURCES CONFIGURE_DEPENDS "src/gui/*.cpp")
 file(GLOB GUI_CUSTOM_MENU_SOURCES CONFIGURE_DEPENDS "src/gui/custom_menu/*.cpp")
 file(GLOB INPUT_SOURCES CONFIGURE_DEPENDS "src/input/*.cpp")
 file(GLOB UTILS_SOURCES CONFIGURE_DEPENDS "src/utils/*.cpp")
+file(GLOB RUNTIME_SOURCES CONFIGURE_DEPENDS "src/runtime/*.cpp")
 set(RESOURCE_SOURCES "src/resources/efz_training_resources.rc")
 
 # Remove duplicate legacy files
@@ -116,6 +117,7 @@ set(SOURCES
     ${GUI_CUSTOM_MENU_SOURCES}
     ${INPUT_SOURCES}
     ${UTILS_SOURCES}
+    ${RUNTIME_SOURCES}
     ${IMGUI_SOURCES}
     ${RESOURCE_SOURCES}
 )
@@ -291,6 +293,217 @@ set_property(TARGET efz_training_mode PROPERTY
 
 include(CTest)
 if(BUILD_TESTING)
+    # F05 checkpoint components; native output installation is not enabled yet.
+    add_executable(audio_output_lifetime_tests
+        tests/practice_isolation/audio_output_lifetime_tests.cpp)
+    target_include_directories(audio_output_lifetime_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET audio_output_lifetime_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME audio_output_lifetime_tests COMMAND audio_output_lifetime_tests)
+
+    if(MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 4)
+        add_executable(audio_native_adapter_abi_tests
+            tests/practice_isolation/audio_native_adapter_abi_tests.cpp)
+        target_include_directories(audio_native_adapter_abi_tests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        set_property(TARGET audio_native_adapter_abi_tests PROPERTY
+            MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+        add_test(NAME audio_native_adapter_abi_tests COMMAND audio_native_adapter_abi_tests)
+    endif()
+
+    add_executable(patch_ledger_win32_tests
+        tests/practice_isolation/patch_ledger_win32_tests.cpp
+        src/runtime/patch_ledger.cpp
+        src/runtime/patch_ledger_win32.cpp)
+    target_include_directories(patch_ledger_win32_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET patch_ledger_win32_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME patch_ledger_win32_tests COMMAND patch_ledger_win32_tests)
+
+    add_executable(audio_runtime_state_tests
+        tests/practice_isolation/audio_runtime_state_tests.cpp
+        src/utils/audio_runtime_state.cpp)
+    target_include_directories(audio_runtime_state_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET audio_runtime_state_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME audio_runtime_state_tests COMMAND audio_runtime_state_tests)
+
+    # Exercise the actual cooperating DLL sources when the companion checkout
+    # is present. This is a paired integration test, not a substitute provider.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../ExtendedConfig/src/feature/audio_control.cpp"
+       AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../ExtendedConfig/src/feature/shared_config_store.cpp")
+        add_executable(audio_file_transactions_tests
+            tests/practice_isolation/audio_file_transactions_tests.cpp
+            tests/practice_isolation/audio_transaction_training.cpp
+            tests/practice_isolation/audio_transaction_companion.cpp
+            src/utils/audio_runtime_state.cpp)
+        target_include_directories(audio_file_transactions_tests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/../ExtendedConfig/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/minhook/include)
+        target_compile_definitions(audio_file_transactions_tests PRIVATE
+            NOMINMAX WIN32_LEAN_AND_MEAN)
+        if(MSVC)
+            target_compile_options(audio_file_transactions_tests PRIVATE /Gy)
+        endif()
+        set_property(TARGET audio_file_transactions_tests PROPERTY
+            MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+        if(TARGET minhook)
+            target_link_libraries(audio_file_transactions_tests PRIVATE minhook)
+        else()
+            target_link_libraries(audio_file_transactions_tests PRIVATE
+                "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/minhook/lib/libMinHook.x86.lib")
+        endif()
+        add_test(NAME audio_file_transactions_tests COMMAND audio_file_transactions_tests)
+    else()
+        message(STATUS "Audio companion transaction tests unavailable: ExtendedConfig source checkout is required")
+    endif()
+
+    add_executable(patch_ledger_tests
+        tests/practice_isolation/patch_ledger_tests.cpp
+        src/runtime/patch_ledger.cpp)
+    target_include_directories(patch_ledger_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET patch_ledger_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME patch_ledger_tests COMMAND patch_ledger_tests)
+
+    add_executable(hook_registry_tests
+        tests/practice_isolation/hook_registry_tests.cpp
+        src/runtime/hook_registry.cpp
+        src/runtime/patch_ledger.cpp)
+    target_include_directories(hook_registry_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET hook_registry_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME hook_registry_tests COMMAND hook_registry_tests)
+
+    add_executable(external_hook_registry_tests
+        tests/practice_isolation/external_hook_registry_tests.cpp
+        src/runtime/hook_registry.cpp
+        src/runtime/patch_ledger.cpp)
+    target_include_directories(external_hook_registry_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET external_hook_registry_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME external_hook_registry_tests COMMAND external_hook_registry_tests)
+
+    if(MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 4)
+        add_executable(practice_native_adapter_tests
+            tests/practice_isolation/practice_native_adapter_tests.cpp
+            src/runtime/practice_frontend_case.cpp
+            src/runtime/hook_registry.cpp
+            src/runtime/patch_ledger.cpp)
+        target_include_directories(practice_native_adapter_tests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        set_property(TARGET practice_native_adapter_tests PROPERTY
+            MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+        add_test(NAME practice_native_adapter_tests COMMAND practice_native_adapter_tests)
+
+        add_executable(practice_battle_gates_tests
+            tests/practice_isolation/practice_battle_gates_tests.cpp
+            src/runtime/practice_battle_gates.cpp
+            src/runtime/hook_registry.cpp
+            src/runtime/patch_ledger.cpp)
+        target_include_directories(practice_battle_gates_tests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        set_property(TARGET practice_battle_gates_tests PROPERTY
+            MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+        add_test(NAME practice_battle_gates_tests COMMAND practice_battle_gates_tests)
+    endif()
+
+    add_executable(practice_session_tests
+        tests/practice_isolation/practice_session_tests.cpp)
+    target_include_directories(practice_session_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET practice_session_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME practice_session_tests COMMAND practice_session_tests)
+
+    add_executable(practice_worker_tests
+        tests/practice_isolation/practice_worker_tests.cpp
+        src/runtime/practice_worker.cpp)
+    target_include_directories(practice_worker_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET practice_worker_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME practice_worker_tests COMMAND practice_worker_tests)
+
+    add_executable(practice_runtime_tests
+        tests/practice_isolation/practice_runtime_tests.cpp
+        src/runtime/practice_runtime.cpp
+        src/runtime/practice_worker.cpp
+        src/runtime/hook_registry.cpp
+        src/runtime/patch_ledger.cpp
+        src/runtime/patch_ledger_win32.cpp)
+    target_include_directories(practice_runtime_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET practice_runtime_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME practice_runtime_tests COMMAND practice_runtime_tests)
+    add_test(NAME practice_runtime_duplicate_begin_tests
+        COMMAND practice_runtime_tests duplicate-begin)
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../InGameNetplay/src/netplay/bridge/practice_runtime_owner.cpp")
+        add_executable(practice_provider_owner_tests
+            tests/practice_isolation/practice_provider_owner_tests.cpp
+            src/runtime/practice_runtime.cpp
+            src/runtime/practice_worker.cpp
+            src/runtime/hook_registry.cpp
+            src/runtime/patch_ledger.cpp
+            src/runtime/patch_ledger_win32.cpp
+            ../InGameNetplay/src/netplay/bridge/practice_runtime_owner.cpp)
+        target_include_directories(practice_provider_owner_tests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/../InGameNetplay/include)
+        set_property(TARGET practice_provider_owner_tests PROPERTY
+            MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+        add_test(NAME practice_provider_owner_tests COMMAND practice_provider_owner_tests)
+
+        add_executable(practice_provider_hold_tests
+            tests/practice_isolation/practice_provider_hold_tests.cpp
+            ../InGameNetplay/src/netplay/bridge/practice_runtime_owner.cpp)
+        target_include_directories(practice_provider_hold_tests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/../InGameNetplay/include)
+        set_property(TARGET practice_provider_hold_tests PROPERTY
+            MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+        add_test(NAME practice_provider_hold_tests COMMAND practice_provider_hold_tests)
+
+        add_executable(practice_provider_registration_tests
+            tests/practice_isolation/practice_provider_registration_tests.cpp
+            ../InGameNetplay/src/netplay/bridge/practice_runtime_bridge.cpp
+            ../InGameNetplay/src/netplay/bridge/practice_runtime_owner.cpp)
+        target_include_directories(practice_provider_registration_tests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/../InGameNetplay/include)
+        target_compile_definitions(practice_provider_registration_tests PRIVATE NOMINMAX)
+        set_property(TARGET practice_provider_registration_tests PROPERTY
+            MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+        add_test(NAME practice_provider_registration_tests
+            COMMAND practice_provider_registration_tests)
+    else()
+        message(STATUS "Practice provider owner tests unavailable: InGameNetplay source checkout is required")
+    endif()
+
+    add_executable(practice_frontend_result_tests
+        tests/practice_isolation/practice_frontend_result_tests.cpp
+        src/game/battle_frontend_result.cpp)
+    target_include_directories(practice_frontend_result_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET practice_frontend_result_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME practice_frontend_result_tests COMMAND practice_frontend_result_tests)
+
+    add_executable(audio_volume_contract
+        tests/practice_isolation/audio_volume_contract.cpp)
+    target_include_directories(audio_volume_contract PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET audio_volume_contract PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME audio_volume_contract COMMAND audio_volume_contract)
+
     add_executable(revival_profile_tests
         tests/revival_profile_tests.cpp)
     target_include_directories(revival_profile_tests PRIVATE
@@ -308,6 +521,16 @@ if(BUILD_TESTING)
         MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
     add_test(NAME character_hotswap_transition_tests
              COMMAND character_hotswap_transition_tests)
+
+    add_executable(character_hotswap_frontend_tests
+        tests/practice_isolation/character_hotswap_frontend_tests.cpp
+        src/game/character_hotswap_frontend.cpp)
+    target_include_directories(character_hotswap_frontend_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_property(TARGET character_hotswap_frontend_tests PROPERTY
+        MSVC_RUNTIME_LIBRARY "${EFZ_MSVC_RUNTIME_LIBRARY}")
+    add_test(NAME character_hotswap_frontend_tests
+        COMMAND character_hotswap_frontend_tests)
 
     add_executable(mission_sequence_policy_tests
         tests/mission_sequence_policy_tests.cpp)

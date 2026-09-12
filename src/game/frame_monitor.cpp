@@ -1,3 +1,6 @@
+#include "runtime/practice_worker.h"
+#include "runtime/practice_runtime.h"
+#include "runtime/practice_session.h"
 #include "../include/game/frame_monitor.h"
 #include "../include/game/macro_controller.h"
 #include "../include/game/mission/mission_engine.h"
@@ -1047,6 +1050,139 @@ void UpdateTriggerOverlay() {
     // (Removed) AI control flag overlay: now shown only in the Stats/ImGui panel to declutter on-screen HUD.
 }
 
+namespace {
+struct RGAnalysis {
+    bool active = false;   // any RG event currently being tracked for this defender
+    int defender = 0;      // 1 or 2
+    short rgMove = 0;      // 168/169/170
+    // Freeze/stun durations in visual frames (as per wiki)
+    double defFreezeF = 0.0;
+    double atkFreezeF = 0.0;
+    double rgStunF   = 0.0; // universal 20F (except Sayuri nuance)
+    double netAdvF   = 0.0; // attacker recovers earlier by this many visual frames
+    // Frame advantage presentation
+    double fa1F      = 0.0; // immediate FA from freeze timings (visual frames)
+    double fa2ThF    = 0.0; // theoretical FA2 = FA1 + RG stun (visual frames)
+    double fa2F      = 0.0; // measured FA until both actionable again (visual frames)
+    bool   fa2Ready  = false;
+    // Tracking for cRG window
+    int attacker = 0;          // 1 or 2
+    short attackerMoveAtEvent = -1;
+    bool cRGOpen = false;
+    int openedAtFrame = 0;     // internal frameCounter when opened
+    // Actionability timestamps (internal frames @192Hz)
+    int atkActionableAt = -1;
+    int defActionableAt = -1;
+    bool fa2Announced = false;
+};
+struct MonitorWorldState {
+    uintptr_t cachedMoveIDAddr1 = 0;
+    uintptr_t cachedMoveIDAddr2 = 0;
+    int addressCacheCounter = 0;
+    bool detailedLogCached = false;
+    int logCounter = 0;
+    short lastLoggedMoveID1 = -1;
+    short lastLoggedMoveID2 = -1;
+    std::atomic<int> moveLogCooldown{0};
+    GamePhase lastPhase = GamePhase::Unknown;
+    int windowStateDecim = -1;
+    int statsDecim = -1;
+    bool s_prevPaused = false;
+    bool s_haveLast = false;
+    uint32_t s_lastStep = 0;
+    int s_stepsSincePause = 0;
+    bool s_prevFAInProgress = false;
+    int trigDecim = -1;
+    RGAnalysis s_rgP1;
+    RGAnalysis s_rgP2;
+    bool s_crgAssistActive = false;
+    int  s_crgAssistHumanP = 1;
+    bool s_crgSavedAutoBlock = false;
+    bool s_crgSavedAutoBlockValid = false;
+    bool s_crRFFreezeP1 = false;
+    bool s_crRFFreezeP2 = false;
+    bool s_prevBothNeutral = false;
+    unsigned long long s_bothNeutralStartMs = 0ULL;
+    uintptr_t s_p1YAddr = 0, s_p2YAddr = 0;
+    uintptr_t s_p1XAddr = 0, s_p2XAddr = 0;
+    uintptr_t s_p1HpAddr = 0, s_p2HpAddr = 0;
+    uintptr_t s_p1MeterAddr = 0, s_p2MeterAddr = 0;
+    uintptr_t s_p1RfAddr = 0, s_p2RfAddr = 0;
+    uintptr_t s_p1CharNameAddr = 0, s_p2CharNameAddr = 0;
+    uintptr_t s_p1CharIdAddr = 0, s_p2CharIdAddr = 0;
+    int s_cacheCounter = 0;
+    uint32_t s_cacheGeneration = 0;
+    int s_prevHpP1 = -1, s_prevHpP2 = -1;
+    int s_cleanHitSuppress = 0;
+    int charEnfDecim = 0;
+    std::chrono::high_resolution_clock::time_point lastCharRead{};
+    int rfDecim = 0;
+    void Reset() {
+        cachedMoveIDAddr1=0;
+        cachedMoveIDAddr2=0;
+        addressCacheCounter=0;
+        detailedLogCached=false;
+        logCounter=0;
+        lastLoggedMoveID1=-1;
+        lastLoggedMoveID2=-1;
+        moveLogCooldown.store(0);
+        lastPhase=GamePhase::Unknown;
+        windowStateDecim=-1;
+        statsDecim=-1;
+        s_prevPaused=false;
+        s_haveLast=false;
+        s_lastStep=0;
+        s_stepsSincePause=0;
+        s_prevFAInProgress=false;
+        trigDecim=-1;
+        s_rgP1={};
+        s_rgP2={};
+        s_crgAssistActive=false;
+        s_crgAssistHumanP=1;
+        s_crgSavedAutoBlock=false;
+        s_crgSavedAutoBlockValid=false;
+        s_crRFFreezeP1=false;
+        s_crRFFreezeP2=false;
+        s_prevBothNeutral=false;
+        s_bothNeutralStartMs=0ULL;
+        s_p1YAddr=0;
+        s_p2YAddr=0;
+        s_p1XAddr=0;
+        s_p2XAddr=0;
+        s_p1HpAddr=0;
+        s_p2HpAddr=0;
+        s_p1MeterAddr=0;
+        s_p2MeterAddr=0;
+        s_p1RfAddr=0;
+        s_p2RfAddr=0;
+        s_p1CharNameAddr=0;
+        s_p2CharNameAddr=0;
+        s_p1CharIdAddr=0;
+        s_p2CharIdAddr=0;
+        s_cacheCounter=0;
+        s_cacheGeneration=0;
+        s_prevHpP1=-1;
+        s_prevHpP2=-1;
+        s_cleanHitSuppress=0;
+        charEnfDecim=0;
+        lastCharRead=std::chrono::high_resolution_clock::time_point{};
+        rfDecim=0;
+    }
+};
+MonitorWorldState monitorWorld;
+std::atomic<uint32_t> monitorTimeline{0};
+}
+
+void ResetFrameMonitorTimeline() {
+    // Runtime calls only after work closure, input restoration and park/drain.
+    assert(Practice::MonitorParked());
+    if(monitorWorld.s_crRFFreezeP1)StopRFFreezePlayer(1);
+    if(monitorWorld.s_crRFFreezeP2)StopRFFreezePlayer(2);
+    monitorWorld.Reset();
+    s_ptrCache={};g_lastSample={};
+    monitorTimeline.fetch_add(1,std::memory_order_release);
+}
+
 void FrameDataMonitor() {
     using clock = std::chrono::high_resolution_clock;
 
@@ -1054,28 +1190,34 @@ void FrameDataMonitor() {
         LogOut("[FRAME MONITOR] Starting frame monitoring at 192fps for maximum precision", true);
     }
     
-    // Use high (but not time-critical) priority to avoid starving DWM/GPU queues
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+    // Timer and elevated priority are acquired only for each active interval.
+    auto& monitorTiming = Practice::NativeMonitorTiming();
+    Practice::MonitorThreadStarted(monitorTiming);
+    struct MonitorLifetime {
+        Practice::MonitorTimingLease& timing;
+        ~MonitorLifetime(){(void)timing.EndInterval();Practice::MonitorThreadStopped();}
+    } monitorLifetime{monitorTiming};
+    uint32_t monitorWorldGeneration=0,seenMonitorTimeline=monitorTimeline.load(std::memory_order_acquire);
     
     short prevMoveID1 = -1, prevMoveID2 = -1;
     // Update frame time to match 192fps instead of 60fps
     // 1,000,000,000 / 192 = 5,208,333 nanoseconds per frame
     const auto targetFrameTime = std::chrono::nanoseconds(5208333);
-    static uintptr_t cachedMoveIDAddr1 = 0;
-    static uintptr_t cachedMoveIDAddr2 = 0;
-    static int addressCacheCounter = 0;
+    auto& cachedMoveIDAddr1=monitorWorld.cachedMoveIDAddr1;
+    auto& cachedMoveIDAddr2=monitorWorld.cachedMoveIDAddr2;
+    auto& addressCacheCounter=monitorWorld.addressCacheCounter;
     auto lastLogTime = clock::now();
     int framesSinceLastLog = 0;
     extern std::atomic<bool> g_isShuttingDown;
 
     
     // Cache values that don't change frequently:
-    static bool detailedLogCached = false;
-    static int logCounter = 0;
+    auto& detailedLogCached=monitorWorld.detailedLogCached;
+    auto& logCounter=monitorWorld.logCounter;
 
-    static short lastLoggedMoveID1 = -1;
-    static short lastLoggedMoveID2 = -1;
-    static std::atomic<int> moveLogCooldown{0};
+    auto& lastLoggedMoveID1=monitorWorld.lastLoggedMoveID1;
+    auto& lastLoggedMoveID2=monitorWorld.lastLoggedMoveID2;
+    auto& moveLogCooldown=monitorWorld.moveLogCooldown;
     
     // High precision timer resolution (enable only during Match to reduce system-wide timer pressure)
     bool highResActive = false;
@@ -1104,7 +1246,34 @@ void FrameDataMonitor() {
     bool audioHookOwnershipTerminal = false;
     DWORD lastAudioHookResolveTick = GetTickCount() - 1000u;
 
-    while (!g_isShuttingDown) {
+    while (!g_isShuttingDown && !Practice::MonitorStopRequested()) {
+        const bool scopedMonitor=Practice::MonitorLifecycleOwned();
+        auto work=scopedMonitor?Practice::TryEnterMonitorWork():Practice::WorkLease{};
+        if(scopedMonitor && !work) {
+            (void)monitorTiming.EndInterval();highResActive=false;
+            Practice::SetMonitorParked(true);
+            // No game pointers, queue progression, counter increments or
+            // measurement reset while waiting for an owned world.
+            const auto wake=Practice::WaitForMonitorSignal();
+            if(wake==Practice::MonitorWait::Stopped || wake==Practice::MonitorWait::Failed)break;
+            expectedNext=clock::now()+targetFrameTime;
+            continue;
+        }
+        Practice::SetMonitorParked(false);
+        if(scopedMonitor && (work.Generation()!=monitorWorldGeneration || seenMonitorTimeline!=monitorTimeline.load(std::memory_order_acquire))) {
+            seenMonitorTimeline=monitorTimeline.load(std::memory_order_acquire);
+            monitorWorldGeneration=work.Generation();
+            expectedNext=clock::now()+targetFrameTime;
+            cachedMoveIDAddr1=cachedMoveIDAddr2=0;addressCacheCounter=0;
+            fm_lastP1Ptr=fm_lastP2Ptr=fm_lastMoveAddr1=fm_lastMoveAddr2=0;
+            prevMoveID1=prevMoveID2=-1;
+            lastLogTime=clock::now();framesSinceLastLog=0;
+            driftAccum=absDriftAccum=maxLate=maxEarly=0;driftSamples=oversleepCount=0;
+            sec_mem=sec_logic=sec_features=0;sec_samples=0;
+            lastFmSyncMode=GameMode::Unknown;lastFmSyncPhase=GamePhase::Unknown;
+            matchLogAnchorInternal=-1;
+            monitorTiming.BeginInterval();highResActive=true;
+        }
         auto frameStart = clock::now();
         const int frameBeforeIncrement = frameCounter.load();
         if (matchLogAnchorInternal >= 0) {
@@ -1125,7 +1294,7 @@ void FrameDataMonitor() {
         // startup must never cause us to claim the two EFZ entrypoints that
         // Revival will later rewrite.
         const DWORD audioResolveNow = GetTickCount();
-        if (!audioHookOwnershipTerminal
+        if (!scopedMonitor && !audioHookOwnershipTerminal
             && static_cast<DWORD>(audioResolveNow - lastAudioHookResolveTick) >= 1000u) {
             lastAudioHookResolveTick = audioResolveNow;
             const uintptr_t efzBase = GetEFZBase();
@@ -1160,24 +1329,29 @@ void FrameDataMonitor() {
                 + std::to_string(lifecycleGeneration), detailedLogging.load());
         }
 
-        if (g_onlineModeActive.load(std::memory_order_acquire)) {
+        if (!scopedMonitor && g_onlineModeActive.load(std::memory_order_acquire)) {
             if (highResActive) {
-                timeEndPeriod(1);
+                (void)monitorTiming.EndInterval();
                 highResActive = false;
             }
             g_lastSample.online = true;
             matchLogAnchorInternal = -1;
             SetCurrentLogMatchInternalFrame(-1);
-            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            (void)Practice::WaitForMonitorSignal(250000000);
             expectedNext = clock::now() + targetFrameTime;
             continue;
         }
 
     // Refresh core pointer cache once per loop iteration
-    RefreshPointerCache();
+    if(scopedMonitor) {
+        const auto& context=work.Context();
+        s_ptrCache.base=context.efzBase;s_ptrCache.gs=context.gameSystem;
+        s_ptrCache.p1=context.player1;s_ptrCache.p2=context.player2;
+        s_ptrCache.gen=s_ptrGen.fetch_add(1,std::memory_order_relaxed)+1;
+    } else RefreshPointerCache();
     // Check current game phase (single authoritative call per loop)
-    GamePhase currentPhase = GetCurrentGamePhase();
-    GameMode currentMode = GetCurrentGameMode();
+    GamePhase currentPhase = scopedMonitor?GamePhase::Match:GetCurrentGamePhase();
+    GameMode currentMode = scopedMonitor?GameMode::Practice:GetCurrentGameMode();
     if (currentPhase == GamePhase::Match) {
         if (matchLogAnchorInternal < 0) {
             matchLogAnchorInternal = frameBeforeIncrement + 1;
@@ -1245,17 +1419,17 @@ void FrameDataMonitor() {
         }
 
         // Toggle high-resolution timers only when needed
-        bool needHighRes = (currentPhase == GamePhase::Match);
+        bool needHighRes = scopedMonitor || (currentPhase == GamePhase::Match);
         if (needHighRes && !highResActive) {
-            timeBeginPeriod(1);
+            monitorTiming.BeginInterval();
             highResActive = true;
         } else if (!needHighRes && highResActive) {
-            timeEndPeriod(1);
+            (void)monitorTiming.EndInterval();
             highResActive = false;
         }
         
         // Track phase changes in one place and log once
-        static GamePhase lastPhase = GamePhase::Unknown;
+        auto& lastPhase=monitorWorld.lastPhase;
         if (currentPhase != lastPhase) {
             // Log a single concise message on change
             LogPhaseIfChanged();
@@ -1381,7 +1555,7 @@ void FrameDataMonitor() {
             s_lastPhaseMode = currentMode;
         }
 
-        CharacterHotswap::Tick(currentPhase, currentMode);
+        if(!scopedMonitor)CharacterHotswap::Tick(currentPhase, currentMode);
 
         // Character Select handling: run per-frame, not only on phase-change edge
         if (currentPhase == GamePhase::CharacterSelect) {
@@ -1577,7 +1751,7 @@ void FrameDataMonitor() {
         {
             // Window-focus and key-monitor state do not need subframe cadence.
             // Throttle them to reduce repeated user32 polling from the 192 Hz loop.
-            static int windowStateDecim = -1;
+            auto& windowStateDecim=monitorWorld.windowStateDecim;
             if (windowStateDecim < 0) windowStateDecim = 7;
             if ((windowStateDecim++ % 8) == 0) {
                 UpdateWindowActiveState();
@@ -1586,7 +1760,7 @@ void FrameDataMonitor() {
         }
         // Throttle stats overlay further to ~15-16 Hz to reduce churn and CPU
         {
-            static int statsDecim = -1; // prime to fire quickly after enable
+            auto& statsDecim=monitorWorld.statsDecim; // prime to fire quickly after enable
             if (statsDecim < 0) statsDecim = 11; // first iteration hits 0 modulo 12
             if ((statsDecim++ % 12) == 0) {
                 UpdateStatsDisplay();
@@ -1608,11 +1782,11 @@ void FrameDataMonitor() {
         // - Tracks step count only while FA timing is actively waiting during pause in Practice.
         // - Exposes state via GetFrameStepDebugInfo() for ImGui to render in the debug menu.
         {
-            static bool s_prevPaused = false;
-            static bool s_haveLast = false;
-            static uint32_t s_lastStep = 0;
-            static int s_stepsSincePause = 0;
-            static bool s_prevFAInProgress = false; // FA waiting window last frame
+            auto& s_prevPaused=monitorWorld.s_prevPaused;
+            auto& s_haveLast=monitorWorld.s_haveLast;
+            auto& s_lastStep=monitorWorld.s_lastStep;
+            auto& s_stepsSincePause=monitorWorld.s_stepsSincePause;
+            auto& s_prevFAInProgress=monitorWorld.s_prevFAInProgress; // FA waiting window last frame
 
             const bool inPractice = (currentMode == GameMode::Practice);
             bool paused = PauseIntegration::IsPracticePaused();
@@ -1734,7 +1908,7 @@ void FrameDataMonitor() {
         // Only run the main monitoring logic if features are enabled
         if (g_featuresEnabled.load()) {
             // Throttle trigger overlay to ~12-13 Hz (every 16 internal frames ~83ms)
-            static int trigDecim = -1; // prime to show overlay quickly after enable
+            auto& trigDecim=monitorWorld.trigDecim; // prime to show overlay quickly after enable
             if (trigDecim < 0) trigDecim = 15;
             if ((trigDecim++ % 16) == 0) {
                 UpdateTriggerOverlay();
@@ -1813,8 +1987,8 @@ void FrameDataMonitor() {
             MacroController::Tick();
             // Refresh addresses periodically, and also on first use if not yet cached
             if (addressCacheCounter++ >= 192 || !cachedMoveIDAddr1 || !cachedMoveIDAddr2) {
-                cachedMoveIDAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET);
-                cachedMoveIDAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
+                cachedMoveIDAddr1 = scopedMonitor?s_ptrCache.p1+MOVE_ID_OFFSET:ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET);
+                cachedMoveIDAddr2 = scopedMonitor?s_ptrCache.p2+MOVE_ID_OFFSET:ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
                 addressCacheCounter = 0;
                 
                 // Log timing performance every second (config-gated)
@@ -1836,10 +2010,10 @@ void FrameDataMonitor() {
             short moveID1 = 0, moveID2 = 0;
             if (cachedMoveIDAddr1 && !SafeReadMemory(cachedMoveIDAddr1, &moveID1, sizeof(short))) {
                 // Re-cache on read failure
-                cachedMoveIDAddr1 = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET);
+                cachedMoveIDAddr1 = scopedMonitor?s_ptrCache.p1+MOVE_ID_OFFSET:ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET);
             }
             if (cachedMoveIDAddr2 && !SafeReadMemory(cachedMoveIDAddr2, &moveID2, sizeof(short))) {
-                cachedMoveIDAddr2 = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
+                cachedMoveIDAddr2 = scopedMonitor?s_ptrCache.p2+MOVE_ID_OFFSET:ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET);
             }
 
             // Populate unified per-frame sample (read-only use for now)
@@ -1872,40 +2046,16 @@ void FrameDataMonitor() {
             ComboOverlay::Tick(g_lastSample);
 
             // --- Recoil Guard (RG) analysis: detect edges and compute freeze/advantage ---
-            struct RGAnalysis {
-                bool active = false;   // any RG event currently being tracked for this defender
-                int defender = 0;      // 1 or 2
-                short rgMove = 0;      // 168/169/170
-                // Freeze/stun durations in visual frames (as per wiki)
-                double defFreezeF = 0.0;
-                double atkFreezeF = 0.0;
-                double rgStunF   = 0.0; // universal 20F (except Sayuri nuance)
-                double netAdvF   = 0.0; // attacker recovers earlier by this many visual frames
-                // Frame advantage presentation
-                double fa1F      = 0.0; // immediate FA from freeze timings (visual frames)
-                double fa2ThF    = 0.0; // theoretical FA2 = FA1 + RG stun (visual frames)
-                double fa2F      = 0.0; // measured FA until both actionable again (visual frames)
-                bool   fa2Ready  = false;
-                // Tracking for cRG window
-                int attacker = 0;          // 1 or 2
-                short attackerMoveAtEvent = -1;
-                bool cRGOpen = false;
-                int openedAtFrame = 0;     // internal frameCounter when opened
-                // Actionability timestamps (internal frames @192Hz)
-                int atkActionableAt = -1;
-                int defActionableAt = -1;
-                bool fa2Announced = false;
-            };
-            static RGAnalysis s_rgP1; // last RG where P1 was the defender
-            static RGAnalysis s_rgP2; // last RG where P2 was the defender
+            auto& s_rgP1=monitorWorld.s_rgP1; // last RG where P1 was the defender
+            auto& s_rgP2=monitorWorld.s_rgP2; // last RG where P2 was the defender
 
             // Transient Counter RG assist:
             // When the human (SwitchPlayers::GetLocalPlayerIndex()) RGs the dummy, briefly enable dummy autoblock
             // and arm RG on the dummy (GetRemotePlayerIndex()) so it can counter-RG without Always RG.
-            static bool s_crgAssistActive = false;
-            static int  s_crgAssistHumanP = 1;   // side that opened the assist (the human), latched at activation
-            static bool s_crgSavedAutoBlock = false;
-            static bool s_crgSavedAutoBlockValid = false;
+            auto& s_crgAssistActive=monitorWorld.s_crgAssistActive;
+            auto& s_crgAssistHumanP=monitorWorld.s_crgAssistHumanP;   // side that opened the assist (the human), latched at activation
+            auto& s_crgSavedAutoBlock=monitorWorld.s_crgSavedAutoBlock;
+            auto& s_crgSavedAutoBlockValid=monitorWorld.s_crgSavedAutoBlockValid;
 
          auto computeRGInfo = [](short rgMove, double &defF, double &atkF, double &stunF, double &advF, int defenderCharId) {
                 // Values sourced from wiki: EFZ Strategy/Game Mechanics pages
@@ -2414,11 +2564,11 @@ void FrameDataMonitor() {
             // Continuous Recovery: restore values based on unified sample neutral flags + optional both-neutral delay
             {
                 // Track RF freezes we started due to Continuous Recovery (per-side)
-                static bool s_crRFFreezeP1 = false;
-                static bool s_crRFFreezeP2 = false;
+                auto& s_crRFFreezeP1=monitorWorld.s_crRFFreezeP1;
+                auto& s_crRFFreezeP2=monitorWorld.s_crRFFreezeP2;
                 // Both-neutral timing gate
-                static bool s_prevBothNeutral = false;
-                static unsigned long long s_bothNeutralStartMs = 0ULL;
+                auto& s_prevBothNeutral=monitorWorld.s_prevBothNeutral;
+                auto& s_bothNeutralStartMs=monitorWorld.s_bothNeutralStartMs;
                 // Use unified sample values (populated earlier this frame)
                 const PerFrameSample &sample = g_lastSample; // local alias
                 auto resolveTargets = [](bool isP1) {
@@ -2709,18 +2859,26 @@ void FrameDataMonitor() {
             // Publish a snapshot for other consumers at the end of logic section
             {
                 // Resolve and cache addresses periodically to minimize ResolvePointer overhead
-                static uintptr_t s_p1YAddr = 0, s_p2YAddr = 0;
-                static uintptr_t s_p1XAddr = 0, s_p2XAddr = 0;
-                static uintptr_t s_p1HpAddr = 0, s_p2HpAddr = 0;
-                static uintptr_t s_p1MeterAddr = 0, s_p2MeterAddr = 0;
-                static uintptr_t s_p1RfAddr = 0, s_p2RfAddr = 0;
-                static uintptr_t s_p1CharNameAddr = 0, s_p2CharNameAddr = 0; // used to derive IDs if needed
-                static uintptr_t s_p1CharIdAddr = 0, s_p2CharIdAddr = 0; // if ID offset exists in struct (fallback to name->id map)
-                static int s_cacheCounter = 0;
-                static uint32_t s_cacheGeneration = 0;
+                auto& s_p1YAddr=monitorWorld.s_p1YAddr;
+                auto& s_p2YAddr=monitorWorld.s_p2YAddr;
+                auto& s_p1XAddr=monitorWorld.s_p1XAddr;
+                auto& s_p2XAddr=monitorWorld.s_p2XAddr;
+                auto& s_p1HpAddr=monitorWorld.s_p1HpAddr;
+                auto& s_p2HpAddr=monitorWorld.s_p2HpAddr;
+                auto& s_p1MeterAddr=monitorWorld.s_p1MeterAddr;
+                auto& s_p2MeterAddr=monitorWorld.s_p2MeterAddr;
+                auto& s_p1RfAddr=monitorWorld.s_p1RfAddr;
+                auto& s_p2RfAddr=monitorWorld.s_p2RfAddr;
+                auto& s_p1CharNameAddr=monitorWorld.s_p1CharNameAddr;
+                auto& s_p2CharNameAddr=monitorWorld.s_p2CharNameAddr; // used to derive IDs if needed
+                auto& s_p1CharIdAddr=monitorWorld.s_p1CharIdAddr;
+                auto& s_p2CharIdAddr=monitorWorld.s_p2CharIdAddr; // if ID offset exists in struct (fallback to name->id map)
+                auto& s_cacheCounter=monitorWorld.s_cacheCounter;
+                auto& s_cacheGeneration=monitorWorld.s_cacheGeneration;
                 // Clean Hit helper state (HP-based, one-shot)
-                static int s_prevHpP1 = -1, s_prevHpP2 = -1;
-                static int s_cleanHitSuppress = 0; // small cooldown in frames to avoid dupes
+                auto& s_prevHpP1=monitorWorld.s_prevHpP1;
+                auto& s_prevHpP2=monitorWorld.s_prevHpP2;
+                auto& s_cleanHitSuppress=monitorWorld.s_cleanHitSuppress; // small cooldown in frames to avoid dupes
                 if (s_cacheGeneration != lifecycleGeneration) {
                     s_p1YAddr = s_p2YAddr = 0;
                     s_p1XAddr = s_p2XAddr = 0;
@@ -2861,7 +3019,7 @@ void FrameDataMonitor() {
                 PublishSnapshot(snap);
 
                 // Enforce character-specific settings on a modest cadence (~16 Hz)
-                static int charEnfDecim = 0;
+                auto& charEnfDecim=monitorWorld.charEnfDecim;
                 if ((++charEnfDecim % 12) == 0) {
                     // Keep IDs fresh for enforcement decisions
                     if (snap.p1CharId >= 0) displayData.p1CharID = snap.p1CharId;
@@ -2872,7 +3030,7 @@ void FrameDataMonitor() {
                 // Read character-specific values infrequently (~every 2 seconds)
                 {
                     using clock = std::chrono::steady_clock;
-                    static clock::time_point lastCharRead = clock::time_point{};
+                    auto& lastCharRead=monitorWorld.lastCharRead;
                     auto now = clock::now();
                     if (lastCharRead.time_since_epoch().count() == 0 || (now - lastCharRead) >= std::chrono::seconds(2)) {
                         // Sync IDs for ReadCharacterValues
@@ -2919,17 +3077,17 @@ void FrameDataMonitor() {
 FRAME_MONITOR_FRAME_END:
         // New paced sleep using accumulated schedule (expectedNext)
         auto beforeSleep = clock::now();
-        while (beforeSleep < expectedNext) {
+        while (beforeSleep < expectedNext && !Practice::MonitorStopRequested() && (!scopedMonitor || work.IsCurrent())) {
             auto remaining = expectedNext - beforeSleep;
             if (remaining > std::chrono::microseconds(100)) {
                 // Sleep all but ~100us; rely on timeBeginPeriod(1) for ~1ms granularity when active
                 auto sleepChunk = remaining - std::chrono::microseconds(100);
-                std::this_thread::sleep_for(sleepChunk);
+                if(Practice::WaitForMonitorSignal(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(sleepChunk).count()))==Practice::MonitorWait::Failed)break;
             } else {
                 // Only do tight spin precision in Match; otherwise yield-friendly sleep
                 if (currentPhase == GamePhase::Match) {
                     int spinIters = 0;
-                    while (clock::now() < expectedNext) {
+                    while (clock::now() < expectedNext && !Practice::MonitorStopRequested() && (!scopedMonitor || work.IsCurrent())) {
                         _mm_pause();
                         if ((++spinIters & 0xFF) == 0) {
                             // Yield occasionally to avoid starving other threads
@@ -2938,17 +3096,20 @@ FRAME_MONITOR_FRAME_END:
                     }
                 } else {
                     // Outside matches, just sleep the small remainder to avoid CPU churn
-                    std::this_thread::sleep_for(std::chrono::microseconds(100));
+                    (void)Practice::WaitForMonitorSignal(100000);
                 }
                 break;
             }
             beforeSleep = clock::now();
         }
 
+        if(Practice::MonitorStopRequested() || (scopedMonitor && !work.IsCurrent()))continue;
+        // The delayed RF tail belongs to the same coarse work lease. A revoke
+        // during any wait abandons it before resolving another pointer.
         // Maintain RF freeze inline only during Match. Outside Match, avoid repeated stop spam.
         if (!g_onlineModeActive.load() && currentPhase == GamePhase::Match) {
             // ~32 Hz maintenance
-            static int rfDecim = 0; if ((rfDecim++ % 6) == 0) { UpdateRFFreezeTick(); }
+            auto& rfDecim=monitorWorld.rfDecim; if ((rfDecim++ % 6) == 0) { UpdateRFFreezeTick(); }
         } else {
             // Outside Match: do not maintain or force-stop; CR will handle start/stop explicitly
         }
@@ -3001,7 +3162,7 @@ FRAME_MONITOR_FRAME_END:
         LogOut("[FRAME MONITOR] Shutting down frame monitor thread", true);
     }
     if (highResActive) {
-        timeEndPeriod(1);
+        (void)monitorTiming.EndInterval();
     }
 }
 

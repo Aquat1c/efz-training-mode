@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+struct EfzTmEntryV1;
 
 // Centralized immediate-register input writer.
 // Runs at visual framerate (64 fps), writing only the immediate registers
@@ -13,6 +14,13 @@ namespace ImmediateInput {
 // Start/stop worker (idempotent)
 void Start();
 void Stop();
+// Join the old worker and clear private generation/edge state without looking
+// up players or writing neutral. The owner restores input before this boundary.
+void RetireWorker();
+bool BindPracticeWorld(const EfzTmEntryV1& world);
+bool RetireWorker(const EfzTmEntryV1& heldWorld);
+// Close commands and wake the worker; restoration/join belongs to RetireWorker.
+void CancelWork();
 bool IsRunning();
 
 // Continuous set: hold mask until Clear() is called.

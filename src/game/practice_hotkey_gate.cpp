@@ -1,3 +1,4 @@
+#include "utils/minhook_utils.h"
 #include "../../include/game/practice_hotkey_gate.h"
 #include "../../include/game/practice_offsets.h"
 #include "../../include/game/efzrevival_addrs.h" // version-aware RVAs
@@ -64,6 +65,8 @@ namespace {
     }
 
     uintptr_t __fastcall HookedHotkeyEval(void* self, void* edxValue, int a2) {
+    auto hookExecution = MinHookUtils::EnterExecution(MinHookUtils::TicketFor<&HookedHotkeyEval>());
+    if (!hookExecution.Admitted()) return oHotkeyEval ? oHotkeyEval(self, edxValue, a2) : 0;
         PauseIntegration::NotePracticeControllerCandidate(self, "PracticeDispatcher");
         if (Gate_IsMenuVisible() || Mission::PauseMenu::IsOpen() ||
             Mission::TutorialSession::IsActive() ||
@@ -136,18 +139,20 @@ namespace PracticeHotkeyGate {
             LogOut("[HOTKEY] EfzRevival not yet loaded; cannot install gate", true);
             return false;
         }
-        s_evalAddr = ResolveHotkeyEvaluatorRva();
+        const uintptr_t candidate=ResolveHotkeyEvaluatorRva();
+        if (candidate!=s_evalAddr && MinHookUtils::HasOwnedTarget(reinterpret_cast<void*>(s_evalAddr))) return false;
+        s_evalAddr=candidate;
         if (!s_evalAddr) {
             LogOut("[HOTKEY] Failed to resolve Practice hotkey evaluator; gate inactive", true);
             return false;
         }
-        if (MH_CreateHook(reinterpret_cast<LPVOID>(s_evalAddr), reinterpret_cast<LPVOID>(&HookedHotkeyEval), reinterpret_cast<void**>(&oHotkeyEval)) != MH_OK) {
+        if (!MinHookUtils::CreateHook(reinterpret_cast<LPVOID>(s_evalAddr), reinterpret_cast<LPVOID>(&HookedHotkeyEval), reinterpret_cast<void**>(&oHotkeyEval), "[HOTKEY]", "evaluator", nullptr, &MinHookUtils::TicketFor<&HookedHotkeyEval>())) {
             LogOut("[HOTKEY] CreateHook failed for evaluator", true);
             return false;
         }
-        if (MH_EnableHook(reinterpret_cast<LPVOID>(s_evalAddr)) != MH_OK) {
+        if (!MinHookUtils::EnableHook(reinterpret_cast<LPVOID>(s_evalAddr), "[HOTKEY]", "evaluator")) {
             LogOut("[HOTKEY] EnableHook failed for evaluator", true);
-            MH_RemoveHook(reinterpret_cast<LPVOID>(s_evalAddr));
+            MinHookUtils::RemoveHook(reinterpret_cast<LPVOID>(s_evalAddr), "[HOTKEY]", "evaluator");
             return false;
         }
         s_installed.store(true);
@@ -160,10 +165,10 @@ namespace PracticeHotkeyGate {
     }
 
     void Uninstall() {
-        if (!s_installed.load()) return;
+        if (!s_installed.load() && !MinHookUtils::HasOwnedTarget(reinterpret_cast<void*>(s_evalAddr))) return;
         if (s_evalAddr) {
-            MH_DisableHook(reinterpret_cast<LPVOID>(s_evalAddr));
-            MH_RemoveHook(reinterpret_cast<LPVOID>(s_evalAddr));
+            MinHookUtils::DisableHook(reinterpret_cast<LPVOID>(s_evalAddr), "[HOTKEY]", "evaluator");
+            MinHookUtils::RemoveHook(reinterpret_cast<LPVOID>(s_evalAddr), "[HOTKEY]", "evaluator");
         }
         s_installed.store(false);
     }

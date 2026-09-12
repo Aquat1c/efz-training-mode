@@ -14,6 +14,7 @@
 #include "../include/input/input_freeze.h"
 #include "../include/input/immediate_input.h"
 #include "../include/utils/minhook_utils.h"
+#include "../include/utils/xinput_shim.h"
 #include "../include/game/auto_action.h"
 #include "../include/game/auto_action_charge.h"
 #include "../include/game/kaori_recoil_duck.h"
@@ -348,7 +349,8 @@ bool ClearRingSpan(uintptr_t character, uint16_t start, uint16_t length) {
 
 bool CleanupMotionTxnLocked(
     int playerNum, const char* reason,
-    AutoActionMotionOutcome outcome = AutoActionMotionOutcome::Failed) {
+    AutoActionMotionOutcome outcome = AutoActionMotionOutcome::Failed,
+    const EfzTmEntryV1* heldWorld = nullptr) {
     if (!IsValidTransactionPlayer(playerNum)) return true;
     AutoActionMotionTxnState& txn = s_motionTxn[playerNum];
     const uint64_t generation = txn.generation;
@@ -368,6 +370,7 @@ bool CleanupMotionTxnLocked(
     // could not be proven, no delayed offline obligation may write controller
     // or input memory after online play owns the fighter. Retire bookkeeping
     // without touching the new owner's world.
+    if (heldWorld && g_onlineModeActive.load(std::memory_order_acquire)) return false;
     if (g_onlineModeActive.load(std::memory_order_acquire)) {
         LogOut("[AA_INPUT_TXN] P" + std::to_string(playerNum) +
                    " retired offline gen=" +
@@ -384,7 +387,13 @@ bool CleanupMotionTxnLocked(
         return true;
     }
 
-    bool sameWorld = SameMotionTxnWorldLocked(playerNum);
+    const bool sameWorld = heldWorld
+        ? txn.gameState == heldWorld->gameSystem &&
+          txn.character == (playerNum == 1 ? heldWorld->player1 : heldWorld->player2)
+        : SameMotionTxnWorldLocked(playerNum);
+    // A held-world caller must retain a mismatched record for diagnosis;
+    // current-world replacement is never permission to discard its obligation.
+    if (heldWorld && !sameWorld) return false;
     bool cleanupOk = true;
     if (sameWorld && txn.ownsRuntimeState) {
         const uintptr_t character = txn.character;
@@ -1913,10 +1922,16 @@ NormalCleanupResult ClearDeliveredNormalState(
     NormalPulseTransport transport,
     uintptr_t expectedGameState,
     uintptr_t expectedCharacter,
-    const NormalInputPolicy::Intent& intent) {
+    const NormalInputPolicy::Intent& intent,
+    const EfzTmEntryV1* heldWorld = nullptr) {
     // Never touch a replacement fighter, or battle memory after online mode
     // has taken ownership. Awaiting requests are cancelled without writes.
-    if (g_onlineModeActive.load(std::memory_order_relaxed) ||
+    if (heldWorld) {
+        if (g_onlineModeActive.load(std::memory_order_acquire) ||
+            expectedGameState != heldWorld->gameSystem ||
+            expectedCharacter != (playerNum == 1 ? heldWorld->player1 : heldWorld->player2))
+            return NormalCleanupResult::Failed;
+    } else if (g_onlineModeActive.load(std::memory_order_relaxed) ||
         ReadLiveGameState() != expectedGameState ||
         GetPlayerPointer(playerNum) != expectedCharacter) {
         return NormalCleanupResult::RetiredWithoutWrites;
@@ -3350,8 +3365,9 @@ int RunNormalRoute(int characterPtr,
 }
 
 int __fastcall HookedUpdateEntityState(int characterPtr, int /*edx*/) {
+    auto hookExecution = MinHookUtils::EnterExecution(MinHookUtils::TicketFor<&HookedUpdateEntityState>());
     if (!oUpdateEntityState) return characterPtr;
-    if (!s_inputHooksEnabled.load(std::memory_order_acquire) ||
+    if (!hookExecution.Admitted() || !XInputShim::IsPollingActive() || !s_inputHooksEnabled.load(std::memory_order_acquire) ||
         g_onlineModeActive.load(std::memory_order_acquire)) {
         return oUpdateEntityState(characterPtr);
     }
@@ -3653,6 +3669,69 @@ int __fastcall HookedUpdateEntityState(int characterPtr, int /*edx*/) {
 
 } // namespace
 
+uint32_t RetireNativeInputOwners(const EfzTmEntryV1& world) {
+    std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    if (world.nativeThreadId != GetCurrentThreadId() || !world.id.battleWorld ||
+        g_onlineModeActive.load(std::memory_order_acquire)) return EFZ_TM_FAULTED;
+    bool pending = false;
+    for (int player = 1; player <= 2; ++player) {
+        std::lock_guard<std::recursive_mutex> transactionLock(s_motionTxn[player].mutex);
+        auto& transaction = s_motionTxn[player];
+        const uintptr_t character = player == 1 ? world.player1 : world.player2;
+        if (transaction.phase != AutoActionMotionTxnPhase::Idle) {
+            if (transaction.gameState != world.gameSystem || transaction.character != character)
+                return EFZ_TM_FAULTED;
+            if (!CleanupMotionTxnLocked(player, "Practice old-world retirement",
+                                        AutoActionMotionOutcome::Cancelled, &world)) pending = true;
+        }
+        if (s_pendingAiRestoreActive[player].load(std::memory_order_acquire)) {
+            const auto& restore = s_pendingAiRestore[player];
+            if (restore.gameState != world.gameSystem || restore.character != character)
+                return EFZ_TM_FAULTED;
+            if (SafeWriteMemory(character + AI_CONTROL_FLAG_OFFSET, &restore.aiFlag, sizeof(restore.aiFlag)))
+                ClearPendingAiRestoreLocked(player);
+            else pending = true;
+        }
+    }
+    for (int player = 1; player <= 2; ++player) {
+        auto& slot = s_normalPulse[player];
+        std::lock_guard<std::recursive_mutex> normalLock(slot.mutex);
+        const bool delivered = slot.cleanupPending || slot.deliveredAnyPhase || slot.rawReleaseGuard ||
+            s_normalRawRegisterOwner[player].load(std::memory_order_acquire);
+        if (delivered) {
+            const uintptr_t character = player == 1 ? world.player1 : world.player2;
+            if (slot.gameState != world.gameSystem || slot.character != character) return EFZ_TM_FAULTED;
+            const auto snapshot = slot.state.Current();
+            const auto& intent = slot.cleanupPending ? slot.cleanupIntent : snapshot.intent;
+            if (ClearDeliveredNormalState(player, slot.transport, slot.gameState, slot.character,
+                                          intent, &world) == NormalCleanupResult::Failed) {
+                RetainFailedNormalCleanupLocked(player, slot, intent);
+                pending = true;
+                continue;
+            }
+        }
+        // The held native owner is past this world's last consumer. Preserve
+        // outcomes, but no queued generation or raw release guard survives it.
+        CancelNormalPulseGenerationsLocked(slot);
+        slot.state.Reset();
+        slot.transport = NormalPulseTransport::Unselected;
+        slot.gameState = 0;
+        slot.character = 0;
+        slot.deliveredAnyPhase = false;
+        slot.rawReleaseGuard = false;
+        slot.pressAwaitingConfirmation = false;
+        slot.pressBeforeMove = -1;
+        slot.pressBeforeFrame = -1;
+        slot.pressAttempts = 0;
+        slot.retryNeutralPending = false;
+        slot.abortAfterRetryNeutral = false;
+        slot.cleanupPending = false;
+        slot.cleanupIntent = {};
+        s_normalRawRegisterOwner[player].store(false, std::memory_order_release);
+    }
+    return pending ? EFZ_TM_PENDING : EFZ_TM_READY;
+}
+
 bool SetVanillaSwapInputRouting(bool enable) {
     std::lock_guard<std::mutex> lock(g_bindingSwapMutex);
     const bool previous = g_bindingSwapState.active;
@@ -3789,7 +3868,8 @@ static void ObservePhysicalPollIfRequested(unsigned int logicalPlayer,
 // Our poll hook. Use __fastcall to match __thiscall trampoline signature.
 static int __fastcall HookedPollPlayerInputState(int inputManagerPtr, int /*edx*/, unsigned int playerIndex)
 {
-    if (!s_inputHooksEnabled.load(std::memory_order_acquire)
+    auto hookExecution = MinHookUtils::EnterExecution(MinHookUtils::TicketFor<&HookedPollPlayerInputState>());
+    if (!hookExecution.Admitted() || !XInputShim::IsPollingActive() || !s_inputHooksEnabled.load(std::memory_order_acquire)
         || g_onlineModeActive.load(std::memory_order_relaxed)) {
         return oPollPlayerInputState ? oPollPlayerInputState(inputManagerPtr, playerIndex) : 0;
     }
@@ -3894,7 +3974,8 @@ static int __fastcall HookedPollPlayerInputState(int inputManagerPtr, int /*edx*
 // Our custom function that will be called instead of the original.
 // We use __fastcall for __thiscall hooks from MinHook.
 int __fastcall HookedProcessCharacterInput(int characterPtr, int edx) {
-    if (!s_inputHooksEnabled.load(std::memory_order_acquire)
+    auto hookExecution = MinHookUtils::EnterExecution(MinHookUtils::TicketFor<&HookedProcessCharacterInput>());
+    if (!hookExecution.Admitted() || !XInputShim::IsPollingActive() || !s_inputHooksEnabled.load(std::memory_order_acquire)
         || g_onlineModeActive.load(std::memory_order_relaxed)) {
         return oProcessCharacterInput(characterPtr);
     }
@@ -4253,19 +4334,25 @@ void InstallInputHook() {
     if (!ResolveInputHookTargets(targetAddr, pollAddr, stateUpdateAddr)) {
         return;
     }
+    if ((s_processTargetAddr != targetAddr && MinHookUtils::HasOwnedTarget(reinterpret_cast<void*>(s_processTargetAddr))) ||
+        (s_pollTargetAddr != pollAddr && MinHookUtils::HasOwnedTarget(reinterpret_cast<void*>(s_pollTargetAddr))) ||
+        (s_stateUpdateTargetAddr != stateUpdateAddr && MinHookUtils::HasOwnedTarget(reinterpret_cast<void*>(s_stateUpdateTargetAddr)))) {
+        LogOut("[INPUT_HOOK] Target replacement pending retirement of previous incarnation", true);
+        return;
+    }
     s_processTargetAddr = targetAddr;
     s_pollTargetAddr = pollAddr;
     s_stateUpdateTargetAddr = stateUpdateAddr;
 
     if (!s_inputHooksCreated.load(std::memory_order_acquire)) {
-        if (!ValidateStateUpdateTarget(stateUpdateAddr)) {
+        if (!MinHookUtils::HasOwnedTarget(reinterpret_cast<void*>(stateUpdateAddr)) && !ValidateStateUpdateTarget(stateUpdateAddr)) {
             return;
         }
         if (!MinHookUtils::CreateHook(reinterpret_cast<LPVOID>(targetAddr),
                                       reinterpret_cast<void*>(&HookedProcessCharacterInput),
                                       reinterpret_cast<void**>(&oProcessCharacterInput),
                                       "[INPUT_HOOK]",
-                                      "processCharacterInput")) {
+                                      "processCharacterInput", nullptr, &MinHookUtils::TicketFor<&HookedProcessCharacterInput>())) {
             return;
         }
 
@@ -4273,7 +4360,7 @@ void InstallInputHook() {
                                       reinterpret_cast<void*>(&HookedPollPlayerInputState),
                                       reinterpret_cast<void**>(&oPollPlayerInputState),
                                       "[INPUT_HOOK]",
-                                      "pollPlayerInputState")) {
+                                      "pollPlayerInputState", nullptr, &MinHookUtils::TicketFor<&HookedPollPlayerInputState>())) {
             (void)MinHookUtils::RemoveHook(reinterpret_cast<LPVOID>(targetAddr), "[INPUT_HOOK]", "processCharacterInput");
             return;
         }
@@ -4282,7 +4369,7 @@ void InstallInputHook() {
                                       reinterpret_cast<void*>(&HookedUpdateEntityState),
                                       reinterpret_cast<void**>(&oUpdateEntityState),
                                       "[INPUT_HOOK]",
-                                      "updateEntityState")) {
+                                      "updateEntityState", nullptr, &MinHookUtils::TicketFor<&HookedUpdateEntityState>())) {
             (void)MinHookUtils::RemoveHook(reinterpret_cast<LPVOID>(pollAddr), "[INPUT_HOOK]", "pollPlayerInputState");
             (void)MinHookUtils::RemoveHook(reinterpret_cast<LPVOID>(targetAddr), "[INPUT_HOOK]", "processCharacterInput");
             return;
@@ -4318,6 +4405,9 @@ void SetInputHookActive(bool active) {
     const bool wasEnabled =
         s_inputHooksEnabled.load(std::memory_order_acquire);
     if (!active) {
+        MinHookUtils::CloseAdmission("[INPUT_HOOK]");
+        (void)MinHookUtils::DisableOwnedTargets("[INPUT_HOOK]", {});
+        (void)MinHookUtils::ReclaimDrainedTargets("[INPUT_HOOK]", {});
         // Idempotent shutdown: even if the detours were already disabled, no
         // accepted producer may remain waiting for a consumer that cannot run.
         s_inputHooksEnabled.store(false, std::memory_order_release);
@@ -4338,9 +4428,10 @@ void SetInputHookActive(bool active) {
     }
 
     if (active) {
+        if (!MinHookUtils::EnableOwnedTargets("[INPUT_HOOK]")) return;
         s_inputHooksEnabled.store(true, std::memory_order_release);
     }
-    LogOut(std::string("[INPUT_HOOK] Input hooks ") + (active ? "enabled" : "disabled"), true);
+    LogOut(std::string("[INPUT_HOOK] Input hooks ") + (active ? "admission enabled" : "admission closed; physical retirement pending"), true);
 }
 
 void RemoveInputHook() {
@@ -4361,6 +4452,12 @@ void RemoveInputHook() {
     if (s_stateUpdateTargetAddr) {
         (void)MinHookUtils::DisableHook((LPVOID)s_stateUpdateTargetAddr, "[INPUT_HOOK]", "updateEntityState");
         (void)MinHookUtils::RemoveHook((LPVOID)s_stateUpdateTargetAddr, "[INPUT_HOOK]", "updateEntityState");
+    }
+    if (MinHookUtils::HasOwnedTarget(reinterpret_cast<void*>(s_processTargetAddr)) ||
+        MinHookUtils::HasOwnedTarget(reinterpret_cast<void*>(s_pollTargetAddr)) ||
+        MinHookUtils::HasOwnedTarget(reinterpret_cast<void*>(s_stateUpdateTargetAddr))) {
+        LogOut("[INPUT_HOOK] Retirement pending; retaining target addresses, originals and consumer state", true);
+        return;
     }
     s_inputHooksEnabled.store(false, std::memory_order_release);
     s_inputHooksCreated.store(false, std::memory_order_release);

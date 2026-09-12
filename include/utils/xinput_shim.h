@@ -42,6 +42,9 @@ namespace XInputShim {
 
     // Initialize by loading an available XInput DLL (tries 1_4, 9_1_0, 1_3)
     bool Init();
+    // Published by the Practice Battle owner; getters cannot enable polling.
+    void SetPollingActive(bool active);
+    bool IsPollingActive();
     bool IsLoaded();
     const char* LoadedDllName();
 

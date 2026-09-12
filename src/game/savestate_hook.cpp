@@ -194,6 +194,8 @@ namespace {
     }
 
     bool __fastcall HookedLoadState(void* self, void* /*edx*/) {
+        auto execution=MinHookUtils::EnterExecution(MinHookUtils::TicketFor<&HookedLoadState>());
+        if (execution && !execution.Admitted()) return oLoadState ? oLoadState(self) : false;
         if (g_onlineModeActive.load(std::memory_order_relaxed)) {
             return oLoadState ? oLoadState(self) : false;
         }
@@ -205,6 +207,8 @@ namespace {
     }
 
     void __fastcall HookedSaveState(void* self, void* /*edx*/) {
+        auto execution=MinHookUtils::EnterExecution(MinHookUtils::TicketFor<&HookedSaveState>());
+        if (execution && !execution.Admitted()) {if (oSaveState) oSaveState(self);return;}
         if (g_onlineModeActive.load(std::memory_order_relaxed)) {
             if (oSaveState) {
                 oSaveState(self);
@@ -239,6 +243,8 @@ namespace SavestateHook {
         }
 
         uintptr_t base = reinterpret_cast<uintptr_t>(mod);
+        if ((s_loadStateAddr!=base+loadRva && MinHookUtils::HasOwnedTarget(reinterpret_cast<void*>(s_loadStateAddr))) ||
+            (s_saveStateAddr!=base+saveRva && MinHookUtils::HasOwnedTarget(reinterpret_cast<void*>(s_saveStateAddr)))) return false;
         s_loadStateAddr = base + loadRva;
         s_saveStateAddr = base + saveRva;
 
@@ -274,13 +280,13 @@ namespace SavestateHook {
                                                        reinterpret_cast<LPVOID>(&HookedLoadState),
                                                        reinterpret_cast<void**>(&oLoadState),
                                                        "[SAVESTATE][REVIVAL]",
-                                                       "LoadState");
+                                                       "LoadState", nullptr, nullptr, &MinHookUtils::TicketFor<&HookedLoadState>());
 
         saveHookOk = MinHookUtils::CreateAndEnableHook(reinterpret_cast<LPVOID>(s_saveStateAddr),
                                                        reinterpret_cast<LPVOID>(&HookedSaveState),
                                                        reinterpret_cast<void**>(&oSaveState),
                                                        "[SAVESTATE][REVIVAL]",
-                                                       "SaveState");
+                                                       "SaveState", nullptr, nullptr, &MinHookUtils::TicketFor<&HookedSaveState>());
 
         if (!loadHookOk && !saveHookOk) {
             LogOut("[SAVESTATE][REVIVAL] Failed to install any hooks", true);
@@ -298,7 +304,9 @@ namespace SavestateHook {
     }
 
     void Uninstall() {
-        if (!s_installed.load()) return;
+        if (!s_installed.load() &&
+            !MinHookUtils::HasOwnedTarget(reinterpret_cast<void*>(s_loadStateAddr)) &&
+            !MinHookUtils::HasOwnedTarget(reinterpret_cast<void*>(s_saveStateAddr))) return;
 
         if (s_inlineDispatcherMode.exchange(false, std::memory_order_acq_rel)) {
             s_loadStateAddr = 0;
@@ -313,13 +321,13 @@ namespace SavestateHook {
         if (s_loadStateAddr) {
             (void)MinHookUtils::DisableHook(reinterpret_cast<LPVOID>(s_loadStateAddr), "[SAVESTATE][REVIVAL]", "LoadState");
             (void)MinHookUtils::RemoveHook(reinterpret_cast<LPVOID>(s_loadStateAddr), "[SAVESTATE][REVIVAL]", "LoadState");
-            s_loadStateAddr = 0;
+            if (PracticeHooks::ReleaseRetiredOriginal(MinHookUtils::OwnedHooks(), s_loadStateAddr, oLoadState)) s_loadStateAddr=0;
         }
 
         if (s_saveStateAddr) {
             (void)MinHookUtils::DisableHook(reinterpret_cast<LPVOID>(s_saveStateAddr), "[SAVESTATE][REVIVAL]", "SaveState");
             (void)MinHookUtils::RemoveHook(reinterpret_cast<LPVOID>(s_saveStateAddr), "[SAVESTATE][REVIVAL]", "SaveState");
-            s_saveStateAddr = 0;
+            if (PracticeHooks::ReleaseRetiredOriginal(MinHookUtils::OwnedHooks(), s_saveStateAddr, oSaveState)) s_saveStateAddr=0;
         }
 
         s_installed.store(false);

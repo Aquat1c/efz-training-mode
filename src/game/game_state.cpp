@@ -1,3 +1,7 @@
+#include "utils/minhook_utils.h"
+#include "game/battle_frontend_result.h"
+#include "game/character_hotswap.h"
+#include "runtime/practice_battle_gates.h"
 #include "../include/game/game_state.h"
 #include "../include/game/mission/mission_engine.h"
 #include "../include/game/mission/mission_pause_menu.h"
@@ -5,6 +9,7 @@
 #include "../include/core/memory.h"
 #include "../include/core/constants.h"
 #include "../include/utils/utilities.h"
+#include "../include/utils/xinput_shim.h"
 #include "../include/utils/network.h"
 #include "../include/utils/pause_integration.h"
 #include "../include/utils/switch_players.h"
@@ -40,11 +45,7 @@ namespace {
     constexpr uintptr_t SCREEN_EXIT_FLAG_OFFSET = 45;
     constexpr uintptr_t BATTLE_ENGINE_PAUSE_OFFSET = 1416;
 
-    enum class PendingExitOverride : int {
-        None = 0,
-        Title = 1,
-        Loading = 2,
-    };
+    using PendingExitOverride = GameFrontend::ExitRoute;
 
     using BattleUpdateFn = char (__thiscall *)(void* battleContext);
     using BattleHotkeysFn = int (__thiscall *)(void* battleContext);
@@ -59,8 +60,7 @@ namespace {
     std::atomic<BattleUpdateCallback> s_afterBattleUpdate{nullptr};
     std::atomic<uint32_t> s_currentBattleBatch{0};
     std::atomic<uint32_t> s_completedBattleBatch{0};
-    std::atomic<int> s_pendingExitOverride{static_cast<int>(PendingExitOverride::None)};
-    std::atomic<int> s_pendingExitOverrideFrames{0};
+    GameFrontend::BattleExitRouting s_exitRouting;
     std::atomic<bool> s_practiceEscHeld{false};
 
     uint8_t ReadRawScreenStateNoDebounce() {
@@ -133,6 +133,9 @@ namespace {
     }
 
     char __fastcall HookedBattleUpdate(void* battleContext, void* /*edx*/) {
+    auto hookExecution = MinHookUtils::EnterExecution(MinHookUtils::TicketFor<&HookedBattleUpdate>());
+    if (!hookExecution.Admitted()) return oBattleUpdate ? oBattleUpdate(battleContext) : SCREEN_BATTLE;
+        CharacterHotswap::OnBattleFrontendEntry(reinterpret_cast<uintptr_t>(battleContext));
         const uint32_t batch = s_currentBattleBatch.fetch_add(
             1, std::memory_order_acq_rel) + 1;
         if (auto callback = s_beforeBattleUpdate.load(std::memory_order_relaxed)) {
@@ -146,47 +149,15 @@ namespace {
         }
         s_completedBattleBatch.store(batch, std::memory_order_release);
 
-        const PendingExitOverride exitOverride = static_cast<PendingExitOverride>(
-            s_pendingExitOverride.load(std::memory_order_acquire));
-        if (exitOverride == PendingExitOverride::None) {
-            return result;
-        }
-
-        if (result == SCREEN_BATTLE) {
-            int framesLeft = s_pendingExitOverrideFrames.load(std::memory_order_relaxed);
-            if (framesLeft > 0) {
-                s_pendingExitOverrideFrames.store(framesLeft - 1, std::memory_order_relaxed);
-            } else {
-                s_pendingExitOverride.store(static_cast<int>(PendingExitOverride::None), std::memory_order_release);
-            }
-            return result;
-        }
-
-        s_pendingExitOverride.store(static_cast<int>(PendingExitOverride::None), std::memory_order_release);
-        s_pendingExitOverrideFrames.store(0, std::memory_order_relaxed);
-
-        if (result == SCREEN_CHARACTER_SELECT) {
-            if (exitOverride == PendingExitOverride::Loading) {
-                LogOut("[FRONTEND] Battle cleanup completed; overriding next screen to Loading", true);
-                return SCREEN_LOADING;
-            }
-
-            LogOut("[FRONTEND] Battle cleanup completed; overriding next screen to Title", true);
-            // Vanilla silences the OST when returning to the title screen by
-            // switching to BGM slot 150. This Battle->Title override skips the
-            // character-select screen where that normally happens, so without
-            // this the match/stage track (e.g. one set by a hotswap) keeps
-            // playing on the title. Mirror vanilla explicitly.
-            if (const uintptr_t gameStatePtr = GetGameStatePtr()) {
-                PlayBGM(gameStatePtr, 150);
-            }
-            return SCREEN_TITLE;
-        }
-
-        return result;
+        const uint8_t accepted = ConsumeBattleFrontendResult(static_cast<uint8_t>(result),
+            Practice::BattleCleanupHeld(battleContext),0);
+        if (accepted != SCREEN_BATTLE) XInputShim::SetPollingActive(false);
+        return static_cast<char>(accepted);
     }
 
     int __fastcall HookedBattleHotkeys(void* battleContext, void* /*edx*/) {
+    auto hookExecution = MinHookUtils::EnterExecution(MinHookUtils::TicketFor<&HookedBattleHotkeys>());
+    if (!hookExecution.Admitted()) return oBattleHotkeys ? oBattleHotkeys(battleContext) : 0;
         const bool practiceBattle = IsPracticeBattleHotkeyContext();
         bool escDown = false;
         const bool gameActive = practiceBattle && PollEscapeIfGameActive(escDown);
@@ -272,6 +243,17 @@ namespace {
 }
 
 // REVISED: Now takes an optional out parameter.
+uint8_t ConsumeBattleFrontendResult(uint8_t nativeResult,bool cleanupHeld,uintptr_t heldGameSystem) {
+    const auto routed=s_exitRouting.Consume(nativeResult,cleanupHeld);
+    if(routed.silenceTitle) {
+        // A retained cleanup passes its captured authority; ordinary legacy
+        // operation keeps the existing game-system resolution behavior.
+        const auto gameSystem=heldGameSystem?heldGameSystem:GetGameStatePtr();
+        if(gameSystem)PlayBGM(gameSystem,150);
+    }
+    return routed.screen;
+}
+
 GameMode GetCurrentGameMode(uint8_t* rawValueOut) {
     // Static variables to track the previous raw value and guarantee the first read is logged.
     static uint8_t prevRawValue = 99; // Initialize to a value that cannot be the actual first value.
@@ -404,9 +386,8 @@ bool IsTrainingMenuContext() {
     if (ReadRawScreenStateNoDebounce() != SCREEN_BATTLE) {
         return false;
     }
-    // Honour the user's RESTRICT TO PRACTICE / ANY MODE toggle rather than
-    // hardcoding Practice, which would silently remove a shipped feature.
-    if (!IsValidGameMode(GetCurrentGameMode())) {
+    // Training input and menus are restricted to the actual Practice Battle.
+    if (GetCurrentGameMode() != GameMode::Practice) {
         return false;
     }
     // The same second conjunct every other mutating hotkey already pairs with.
@@ -420,11 +401,9 @@ bool EnsureFrontendControlHooksInstalled() {
     if (s_frontendHooksInstalled.load(std::memory_order_acquire)) {
         return true;
     }
-    if (s_frontendHooksPartial.load(std::memory_order_acquire)) return false;
 
     std::lock_guard<std::mutex> hookLock(s_frontendHookMutex);
     if (s_frontendHooksInstalled.load(std::memory_order_acquire)) return true;
-    if (s_frontendHooksPartial.load(std::memory_order_acquire)) return false;
 
     uintptr_t base = GetEFZBase();
     if (!base) {
@@ -434,9 +413,9 @@ bool EnsureFrontendControlHooksInstalled() {
     LPVOID battleUpdateTarget = reinterpret_cast<LPVOID>(base + RVA_BATTLE_UPDATE);
     LPVOID battleHotkeysTarget = reinterpret_cast<LPVOID>(base + RVA_BATTLE_HOTKEYS);
     auto removeOwned = [](LPVOID target, void** original, const char* label) {
-        (void)MH_DisableHook(target);
-        const MH_STATUS status = MH_RemoveHook(target);
-        if (status == MH_OK || status == MH_ERROR_NOT_CREATED) {
+        (void)MinHookUtils::DisableHook(target, "[FRONTEND]", label);
+        const bool removed = MinHookUtils::RemoveHook(target, "[FRONTEND]", label);
+        if (removed) {
             if (original) *original = nullptr;
             return true;
         }
@@ -487,20 +466,19 @@ bool EnsureFrontendControlHooksInstalled() {
         }
     }
 
-    const MH_STATUS updateStatus = MH_CreateHook(
+    const bool updateCreated = MinHookUtils::CreateHook(
         battleUpdateTarget,
         reinterpret_cast<LPVOID>(&HookedBattleUpdate),
-        reinterpret_cast<void**>(&oBattleUpdate));
-    if (updateStatus != MH_OK) {
-        LogOut(updateStatus == MH_ERROR_ALREADY_CREATED
+        reinterpret_cast<void**>(&oBattleUpdate), "[FRONTEND]", "battleUpdate", nullptr, &MinHookUtils::TicketFor<&HookedBattleUpdate>());
+    if (!updateCreated) {
+        LogOut(MinHookUtils::HasOwnedTarget(battleUpdateTarget)
             ? "[FRONTEND] Battle update hook already belongs to another owner"
             : "[FRONTEND] Failed to create battle update hook", true);
-        oBattleUpdate = nullptr;
         s_frontendHooksAttempted.store(true);
         return false;
     }
 
-    if (MH_EnableHook(battleUpdateTarget) != MH_OK) {
+    if (!MinHookUtils::EnableHook(battleUpdateTarget, "[FRONTEND]", "battleUpdate")) {
         (void)removeOwned(battleUpdateTarget,
                           reinterpret_cast<void**>(&oBattleUpdate),
                           "battle update hook");
@@ -509,23 +487,22 @@ bool EnsureFrontendControlHooksInstalled() {
         return false;
     }
 
-    const MH_STATUS hotkeyStatus = MH_CreateHook(
+    const bool hotkeyCreated = MinHookUtils::CreateHook(
         battleHotkeysTarget,
         reinterpret_cast<LPVOID>(&HookedBattleHotkeys),
-        reinterpret_cast<void**>(&oBattleHotkeys));
-    if (hotkeyStatus != MH_OK) {
+        reinterpret_cast<void**>(&oBattleHotkeys), "[FRONTEND]", "battleHotkeys", nullptr, &MinHookUtils::TicketFor<&HookedBattleHotkeys>());
+    if (!hotkeyCreated) {
         (void)removeOwned(battleUpdateTarget,
                           reinterpret_cast<void**>(&oBattleUpdate),
                           "battle update hook");
-        oBattleHotkeys = nullptr;
-        LogOut(hotkeyStatus == MH_ERROR_ALREADY_CREATED
+        LogOut(MinHookUtils::HasOwnedTarget(battleHotkeysTarget)
             ? "[FRONTEND] Battle hotkey hook already belongs to another owner"
             : "[FRONTEND] Failed to create battle hotkey gate", true);
         s_frontendHooksAttempted.store(true);
         return false;
     }
 
-    if (MH_EnableHook(battleHotkeysTarget) != MH_OK) {
+    if (!MinHookUtils::EnableHook(battleHotkeysTarget, "[FRONTEND]", "battleHotkeys")) {
         (void)removeOwned(battleHotkeysTarget,
                           reinterpret_cast<void**>(&oBattleHotkeys),
                           "battle hotkey hook");
@@ -574,13 +551,44 @@ bool CanRequestFrontendExit(FrontendExitTarget target) {
     }
 }
 
+namespace {
+bool WriteCapturedBattleExit(FrontendExitTarget target,uintptr_t battleContext,uintptr_t gameSystem) {
+    uintptr_t liveBattle=0,liveSystem=0;
+    if(!battleContext || !gameSystem || !ResolveScreenContext(SCREEN_BATTLE,liveBattle) ||
+       liveBattle!=battleContext || !SafeReadMemory(battleContext+0x1c,&liveSystem,sizeof(liveSystem)) ||
+       liveSystem!=gameSystem)return false;
+    if(target==FrontendExitTarget::Loading) {
+        uint8_t mode=255;
+        if(!SafeReadMemory(gameSystem+0x1364,&mode,sizeof(mode)) || mode!=1)return false;
+    }
+    const auto route=target==FrontendExitTarget::Title?PendingExitOverride::Title:
+        target==FrontendExitTarget::Loading?PendingExitOverride::Loading:PendingExitOverride::None;
+    __try {return s_exitRouting.RequestCaptured(route,battleContext,liveBattle,ReadRawScreenStateNoDebounce());}
+    __except(EXCEPTION_EXECUTE_HANDLER) {s_exitRouting.Arm(PendingExitOverride::None);return false;}
+}
+}
+bool RequestBattleFrontendExit(FrontendExitTarget target,uintptr_t battleContext,uintptr_t gameSystem) {
+    if(IsNetplaySuspendActive() || IsNetplaySessionActive())return false;
+    if(target!=FrontendExitTarget::CharacterSelect && target!=FrontendExitTarget::Loading && target!=FrontendExitTarget::Title)return false;
+    if(target!=FrontendExitTarget::CharacterSelect && !s_frontendHooksInstalled.load(std::memory_order_acquire))return false;
+    if(!WriteCapturedBattleExit(target,battleContext,gameSystem))return false;
+    const char* resetReason=target==FrontendExitTarget::Title?"MenuExitToTitle":
+        target==FrontendExitTarget::Loading?"MissionDirectReload":"MenuExitToCharacterSelect";
+    ResetModSessionForFrontendExit(resetReason);
+    CloseTrainingMenuForFrontendExit();
+    LogOut(target==FrontendExitTarget::Title?"[FRONTEND] Requested exit to Title through battle cleanup":
+        target==FrontendExitTarget::Loading?"[FRONTEND] Requested direct Loading through battle cleanup":
+        "[FRONTEND] Requested exit to Character Select through battle cleanup",true);
+    return true;
+}
+
 bool RequestFrontendExit(FrontendExitTarget target) {
     if (!CanRequestFrontendExit(target)) {
         LogOut("[FRONTEND] Exit request ignored in current screen/netplay state", true);
         return false;
     }
 
-    const bool hooksReady = EnsureFrontendControlHooksInstalled();
+    (void)EnsureFrontendControlHooksInstalled();
 
     const uint8_t screen = ReadRawScreenStateNoDebounce();
     if (target == FrontendExitTarget::Title && screen == SCREEN_TITLE) {
@@ -589,43 +597,10 @@ bool RequestFrontendExit(FrontendExitTarget target) {
     }
 
     if (screen == SCREEN_BATTLE) {
-        if (target == FrontendExitTarget::Title || target == FrontendExitTarget::Loading) {
-            if (!hooksReady) {
-                LogOut("[FRONTEND] Requested exit override unavailable because the battle update hook is inactive", true);
-                return false;
-            }
-            const PendingExitOverride overrideTarget = target == FrontendExitTarget::Title
-                ? PendingExitOverride::Title
-                : PendingExitOverride::Loading;
-            s_pendingExitOverride.store(static_cast<int>(overrideTarget), std::memory_order_release);
-            s_pendingExitOverrideFrames.store(120, std::memory_order_relaxed);
-        } else {
-            s_pendingExitOverride.store(static_cast<int>(PendingExitOverride::None), std::memory_order_release);
-            s_pendingExitOverrideFrames.store(0, std::memory_order_relaxed);
-        }
-
-        if (!RequestScreenExitFlag(SCREEN_BATTLE)) {
-            s_pendingExitOverride.store(static_cast<int>(PendingExitOverride::None), std::memory_order_release);
-            s_pendingExitOverrideFrames.store(0, std::memory_order_relaxed);
-            LogOut("[FRONTEND] Failed to request battle cleanup", true);
-            return false;
-        }
-
-        const char* resetReason = target == FrontendExitTarget::Title
-            ? "MenuExitToTitle"
-            : (target == FrontendExitTarget::Loading
-                ? "MissionDirectReload"
-                : "MenuExitToCharacterSelect");
-        ResetModSessionForFrontendExit(resetReason);
-        CloseTrainingMenuForFrontendExit();
-
-        const char* requestLog = target == FrontendExitTarget::Title
-            ? "[FRONTEND] Requested exit to Title through battle cleanup"
-            : (target == FrontendExitTarget::Loading
-                ? "[FRONTEND] Requested direct Loading through battle cleanup"
-                : "[FRONTEND] Requested exit to Character Select through battle cleanup");
-        LogOut(requestLog, true);
-        return true;
+        uintptr_t battleContext=0,gameSystem=0;
+        if(!ResolveScreenContext(SCREEN_BATTLE,battleContext) ||
+           !SafeReadMemory(battleContext+0x1c,&gameSystem,sizeof(gameSystem)))return false;
+        return RequestBattleFrontendExit(target,battleContext,gameSystem);
     }
 
     if (screen == SCREEN_CHARACTER_SELECT && target == FrontendExitTarget::Title) {

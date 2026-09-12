@@ -4,6 +4,19 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include "../runtime/practice_contract.h"
+
+namespace Practice {
+enum class ResetReason : uint32_t {
+    BeginWorld, NativeRestoreSucceeded, ExplicitPracticeReset,
+    RetireWorld, LeavePractice
+};
+// Called by the lifecycle owner after measurement and input work has drained.
+void ResetPracticeMeasurements(const EfzTmIdentityV1& identity, ResetReason reason);
+bool CapturePracticeInputBaseline(const EfzTmEntryV1& world);
+void CancelPracticeInputWork();
+uint32_t RetirePracticeInput(const EfzTmEntryV1& world, bool oldWorldHeld);
+}
 
 // Global state variables
 extern std::atomic<bool> menuOpen;
@@ -74,6 +87,7 @@ void CreateDebugConsole();
 void DestroyDebugConsole(); // NEW: Free console and redirect handles
 void SetConsoleVisibility(bool visible); // NEW: Show/Hide console window
 void ResetFrameCounter();
+unsigned int GetDisplayedFrameCounter();
 void ShowHotkeyInfo();
 std::string FormatPosition(double x, double y);
 bool IsHitstun(short moveID);

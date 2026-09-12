@@ -15,14 +15,11 @@
 #include "../include/game/kaori_recoil_duck.h"
 #include <vector>
 #include <sstream>
-#include <chrono>
 #include <iomanip>
 #include <algorithm>
 #include <atomic>
 #include <mutex>
 #include "../include/game/practice_patch.h"
-#include <thread>
-#include <chrono>
 // For global shutdown flag
 #include "../include/core/globals.h"
 
@@ -117,39 +114,6 @@ void RestoreAIControlIfNeeded(int playerNum) {
         // Set flag to AI control
         SetAIControlFlag(playerNum, false);
     }
-}
-
-void ForceHumanControl(int playerNum) {
-    // Mark that we're forcing human control
-    g_forceHumanControlActive.store(true);
-    
-    // Start a thread to continuously set the flag to human
-    std::thread controlThread(ForceHumanControlThread, playerNum);
-    controlThread.detach();
-}
-
-void ForceHumanControlThread(int playerNum) {
-    LogOut("[INPUT_MOTION] Starting human control force thread for P" + std::to_string(playerNum), true);
-    int sleepMs = 16;
-    int stableIters = 0;
-    while (g_forceHumanControlActive.load() && !g_isShuttingDown.load() && !g_onlineModeActive.load()) {
-        // Read current flag to avoid unnecessary writes
-        bool alreadyHuman = IsAIControlFlagHuman(playerNum);
-        if (!alreadyHuman) {
-            SetAIControlFlag(playerNum, true);
-            sleepMs = 16;
-            stableIters = 0;
-        } else {
-            // Back off progressively when stable
-            stableIters++;
-            if (stableIters > 15) sleepMs = 32;   // ~31 Hz
-            if (stableIters > 60) sleepMs = 64;   // ~16 Hz
-            if (stableIters > 180) sleepMs = 128; // ~8 Hz
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
-    }
-    
-    LogOut("[INPUT_MOTION] Human control force thread terminated", true);
 }
 
 bool HoldUp(int playerNum) {

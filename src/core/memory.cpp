@@ -9,7 +9,6 @@
 #include "../include/core/logger.h"
 #include <windows.h>
 #include <atomic>
-#include <thread>
 #include <sstream>
 #include <algorithm>
 #include <cmath>
@@ -867,118 +866,11 @@ std::atomic<double> rfFreezeValueP2(0.0);
 // Track provenance of RF freeze per-player
 static std::atomic<int> rfFreezeOriginP1{ (int)RFFreezeOrigin::None };
 static std::atomic<int> rfFreezeOriginP2{ (int)RFFreezeOrigin::None };
-std::thread rfFreezeThread;
-bool rfThreadRunning = false;
 // Desired RF-freeze IC color lock settings (optional)
 static bool rfFreezeColorP1Enabled = false;
 static bool rfFreezeColorP1Blue = false;
 static bool rfFreezeColorP2Enabled = false;
 static bool rfFreezeColorP2Blue = false;
-
-// Improved RF freeze thread function with better error handling
-void RFFreezeThreadFunc() {
-    // CRITICAL: Never run during online mode
-    if (g_onlineModeActive.load()) {
-        rfThreadRunning = false;
-        return;
-    }
-
-    rfThreadRunning = true;
-    int sleepMs = 10;                // default ~100 Hz when active
-    const int minSleepMs = 5;        // lower bound when values are drifting
-    const int maxSleepMs = 40;       // back off to ~25 Hz when stable
-    int stableIters = 0;
-    auto nearlyEqual = [](double a, double b) {
-        return fabs(a - b) < 1e-6;   // tiny tolerance for float write verification
-    };
-
-    while (rfThreadRunning && !g_isShuttingDown.load()) {
-        // Exit if online mode is detected
-        if (g_onlineModeActive.load()) {
-            rfThreadRunning = false;
-            break;
-        }
-        if (rfFreezing.load()) {
-            uintptr_t base = GetEFZBase();
-            if (base) {
-                // Use direct pointer access
-                uintptr_t* p1Ptr = (uintptr_t*)(base + EFZ_BASE_OFFSET_P1);
-                uintptr_t* p2Ptr = (uintptr_t*)(base + EFZ_BASE_OFFSET_P2);
-                
-                // Validate pointers are readable using IsBadReadPtr
-                if (!IsBadReadPtr(p1Ptr, sizeof(uintptr_t)) && !IsBadReadPtr(p2Ptr, sizeof(uintptr_t))) {
-                    // Follow the pointers to get player structures
-                    uintptr_t p1Base = *p1Ptr;
-                    uintptr_t p2Base = *p2Ptr;
-                    
-                    if (p1Base && p2Base) {
-                        // Calculate RF addresses
-                        double* p1RFAddr = (double*)(p1Base + RF_OFFSET);
-                        double* p2RFAddr = (double*)(p2Base + RF_OFFSET);
-                        
-                        // Validate these addresses using IsBadWritePtr
-                        if (!IsBadWritePtr(p1RFAddr, sizeof(double)) && !IsBadWritePtr(p2RFAddr, sizeof(double))) {
-                            // Only write if value changed to avoid constant page flips
-                            double targetP1 = rfFreezeValueP1.load();
-                            double targetP2 = rfFreezeValueP2.load();
-                            double curP1 = *p1RFAddr;
-                            double curP2 = *p2RFAddr;
-                            bool wrote = false;
-
-                            if (rfFreezeP1Active.load() && !nearlyEqual(curP1, targetP1)) {
-                                DWORD oldProtect1;
-                                if (VirtualProtect(p1RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &oldProtect1)) {
-                                    *p1RFAddr = targetP1;
-                                    VirtualProtect(p1RFAddr, sizeof(double), oldProtect1, &oldProtect1);
-                                    wrote = true;
-                                }
-                            }
-                            if (rfFreezeP2Active.load() && !nearlyEqual(curP2, targetP2)) {
-                                DWORD oldProtect2;
-                                if (VirtualProtect(p2RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &oldProtect2)) {
-                                    *p2RFAddr = targetP2;
-                                    VirtualProtect(p2RFAddr, sizeof(double), oldProtect2, &oldProtect2);
-                                    wrote = true;
-                                }
-                            }
-
-                            // Adjust backoff
-                if (wrote) {
-                                sleepMs = minSleepMs;
-                                stableIters = 0;
-                            } else {
-                                stableIters++;
-                                if (stableIters > 3) {
-                    sleepMs = (std::min)(sleepMs * 2, maxSleepMs);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        else {
-            // When not freezing, back off considerably and avoid memory touching
-            sleepMs = maxSleepMs;
-        }
-        
-        Sleep(sleepMs);
-    }
-}
-
-// Initialize the RF freeze thread
-void InitRFFreezeThread() {
-    // CRITICAL: Never initialize during online mode
-    if (g_onlineModeActive.load()) return;
-    if (rfThreadRunning) return;
-
-    rfThreadRunning = true;
-    rfFreezeThread = std::thread(RFFreezeThreadFunc);
-    rfFreezeThread.detach();
-
-    // Only show in detailed mode
-    LogOut("[RF] RF freeze thread initialized", detailedLogging.load());
-}
 
 // Start freezing RF values
 void StartRFFreeze(double p1Value, double p2Value) {
@@ -1043,14 +935,6 @@ void StopRFFreezePlayer(int player) {
         rfFreezing.store(false);
     }
     LogOut(std::string("[RF] Stopped RF freeze for P") + (player==1?"1":"2"), detailedLogging.load());
-}
-
-// Stop the RF freeze background thread entirely
-void StopRFFreezeThread() {
-    if (rfThreadRunning) {
-        rfThreadRunning = false;
-        LogOut("[RF] RF freeze thread signaled to stop", detailedLogging.load());
-    }
 }
 
 // Allow external modules to toggle neutral-only RF freeze behavior

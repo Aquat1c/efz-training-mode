@@ -161,6 +161,7 @@ void CleanupDirectInput() {
 
 // Poll DirectInput state without interfering with the game
 bool PollDirectInputState(BYTE* keyboardState) {
+    if (!XInputShim::IsPollingActive()) return false;
     if (!g_pKeyboard || !g_directInputAvailable)
         return false;
     
@@ -187,6 +188,7 @@ bool IsDIKeyPressed(BYTE* keyboardState, DWORD dikCode) {
 
 // Helper function at the top to handle keyboard input more reliably
 bool IsKeyPressed(int vKey, bool checkState) {
+    if (!XInputShim::IsPollingActive()) return false;
     SHORT keyState;
     // Use both methods to increase reliability across keyboard layouts
     if (checkState) {
@@ -209,16 +211,16 @@ bool IsKeyPressed(int vKey, bool checkState) {
 // Add a flag to track if the monitor thread is running
 // Start disabled; ManageKeyMonitoring will spawn the thread when appropriate.
 std::atomic<bool> keyMonitorRunning(false);
+static std::atomic<bool> keyMonitorAlive{false};
 std::mutex keyMonitorMutex;
 
 void MonitorKeys() {
     // CRITICAL: Never run during online mode
-    if (g_onlineModeActive.load()) {
+    if (!keyMonitorRunning.load() || !XInputShim::IsPollingActive() || !IsTrainingMenuContext()) {
         keyMonitorRunning.store(false);
+        keyMonitorAlive.store(false, std::memory_order_release);
         return;
     }
-    // Mark as running in case the thread was spawned externally
-    keyMonitorRunning.store(true);
     LogOut("[KEYBINDS] Key monitoring thread started", true);
     
     // Initial log of hotkeys
@@ -250,7 +252,7 @@ void MonitorKeys() {
     unsigned long long nextWindowStateRefreshTick = 0;
     while (keyMonitorRunning.load()) {
         // Exit immediately if online mode is entered
-        if (g_onlineModeActive.load()) {
+        if (!XInputShim::IsPollingActive() || !IsTrainingMenuContext()) {
             keyMonitorRunning.store(false);
             break;
         }
@@ -1035,15 +1037,17 @@ void MonitorKeys() {
     }
     
     LogOut("[KEYBINDS] Key monitoring thread exiting", true);
+    keyMonitorRunning.store(false, std::memory_order_release);
+    keyMonitorAlive.store(false, std::memory_order_release);
 }
 
 // Helper function at the top to handle keyboard input more reliably
 void RestartKeyMonitoring() {
     // CRITICAL: Never start key monitoring during online mode
-    if (g_onlineModeActive.load()) return;
+    if (!XInputShim::IsPollingActive() || !IsTrainingMenuContext()) return;
 
     std::lock_guard<std::mutex> guard(keyMonitorMutex);
-    if (keyMonitorRunning.load()) {
+    if (keyMonitorAlive.load(std::memory_order_acquire)) {
         LogOut("[KEYBINDS] Key monitoring already running", detailedLogging.load());
         return;
     }
@@ -1053,6 +1057,7 @@ void RestartKeyMonitoring() {
     p2Jumping = false;
 
     // Start monitoring thread once
+    keyMonitorAlive.store(true, std::memory_order_release);
     keyMonitorRunning.store(true);
     std::thread(MonitorKeys).detach();
     // Note: MonitorKeys logs "[KEYBINDS] Key monitoring thread started" itself.
@@ -1268,6 +1273,7 @@ bool ReadKeyMappingsFromIni() {
 
 // Fix boolean/integer type warning by implementing conversion functions
 bool ReadDirectInputKeyboardState(BYTE* keyboardState) {
+    if (!XInputShim::IsPollingActive()) return false;
     if (!g_directInputAvailable || !g_pKeyboard || !keyboardState)
         return false;
     
@@ -1323,6 +1329,7 @@ void DetectKeyBindings() {
 }
 
 bool UpdateGamepadState(int gamepadIndex) {
+    if (!XInputShim::IsPollingActive()) return false;
     // Input validation
     if (gamepadIndex < 0 || gamepadIndex >= g_gamepadCount || !g_gamepads[gamepadIndex].device) {
         return false;
@@ -1361,6 +1368,7 @@ bool UpdateGamepadState(int gamepadIndex) {
 // GetDIKeyName is now implemented centrally in di_keycodes.cpp
 
 void DetectKeyBindingsWithDI() {
+    if (!XInputShim::IsPollingActive()) return;
     static BYTE prevKeyboardState[256] = {0};
     BYTE keyboardState[256] = {0};
     

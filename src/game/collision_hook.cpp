@@ -10,10 +10,13 @@
 #include <windows.h>
 #include <atomic>
 #include <array>
+#include <algorithm>
 #include <cstring>
 #include <string>
 #include <sstream>
 #include <iomanip>
+#include <mutex>
+#include "runtime/native_game_profile.h"
 #include "../include/core/constants.h"
 #include "../include/gui/overlay.h"
 #include "../include/utils/minhook_utils.h"
@@ -272,31 +275,77 @@ bool ExactGuardPointBranch(const CollisionBranchFlags& flags,
 
 } // namespace
 
-// Identify which player owns this frame-data by scanning both player bases for a matching field.
-static void IdentifyPlayerByFrameData(uintptr_t frameDataPtr,
-                                      const PlayerPointerSnapshot& players,
-                                      int& outPlayerNum, int& outOffset) {
-    outPlayerNum = 0; outOffset = -1;
-    if (!frameDataPtr) return;
-    // scan first 0x600 bytes at 4-byte alignment
-    auto scan = [&](uintptr_t playerBase) -> int {
-        if (!playerBase) return -1;
-    for (int off = 0; off <= 0x1200 - 4; off += 4) {
-            uintptr_t candidate = 0;
-            if (!SafeReadMemory(playerBase + off, &candidate, sizeof(candidate))) continue;
-            if (candidate == frameDataPtr) return off;
-        }
-        return -1;
-    };
-    int off1 = scan(players.p1);
-    if (off1 >= 0) { outPlayerNum = 1; outOffset = off1; return; }
-    int off2 = scan(players.p2);
-    if (off2 >= 0) { outPlayerNum = 2; outOffset = off2; return; }
+namespace {
+constexpr size_t kCollisionLayoutBytes=0x1200;
+struct CapturedCollisionLayout {
+    uintptr_t player=0,resource=0,frameData=0;
+    short move=-1;
+    bool attempted=false,pending=false;
+    size_t bytes=0;
+    std::array<uint8_t,kCollisionLayoutBytes> copied{};
+};
+std::mutex collisionLayoutMutex;
+CapturedCollisionLayout collisionLayouts[2];
+std::atomic<bool> collisionLayoutSupported{false};
+std::atomic<CollisionLayoutStatus> collisionLayoutStatus[2]{CollisionLayoutStatus::NotAvailableYet,CollisionLayoutStatus::NotAvailableYet};
+
+void CaptureCollisionFrameData(int playerNum,uintptr_t attacker,uintptr_t frameData,short move) {
+    if(playerNum<1 || playerNum>2 || !attacker || !frameData)return;
+    auto& direct=playerNum==1?g_lastAttackDataP1:g_lastAttackDataP2;
+    direct.store(frameData,std::memory_order_release);
+    const size_t player=static_cast<size_t>(playerNum-1);
+    if(!collisionLayoutSupported.load(std::memory_order_acquire)) {
+        collisionLayoutStatus[player].store(CollisionLayoutStatus::UnsupportedLayout,std::memory_order_release);
+        return;
+    }
+    auto& offset=playerNum==1?g_attackDataOffsetP1:g_attackDataOffsetP2;
+    const int known=offset.load(std::memory_order_acquire);
+    uintptr_t current=0;
+    if(known>=0 && SafeReadMemory(attacker+known,&current,sizeof(current)) && current==frameData)return;
+    if(known>=0)offset.store(-1,std::memory_order_release);
+    collisionLayoutStatus[player].store(CollisionLayoutStatus::NotAvailableYet,std::memory_order_release);
+    uintptr_t resource=0;
+    if(!SafeReadMemory(attacker+ANIM_TABLE_OFFSET,&resource,sizeof(resource)) || !resource)return;
+    // A collision never waits for display-side discovery. Direct attacker/frame
+    // capture above remains valid even if this bounded descriptor is unavailable.
+    std::unique_lock<std::mutex> lock(collisionLayoutMutex,std::try_to_lock);
+    if(!lock.owns_lock())return;
+    auto& capture=collisionLayouts[player];
+    if(known<0 && capture.attempted && capture.player==attacker && capture.resource==resource && capture.move==move)return;
+    capture.player=attacker;capture.resource=resource;capture.move=move;capture.frameData=frameData;
+    capture.attempted=true;capture.pending=false;capture.bytes=0;
+    MEMORY_BASIC_INFORMATION info{};
+    if(!VirtualQuery(reinterpret_cast<void*>(attacker),&info,sizeof(info)) || info.State!=MEM_COMMIT ||
+       (info.Protect&(PAGE_GUARD|PAGE_NOACCESS)))return;
+    const uintptr_t end=reinterpret_cast<uintptr_t>(info.BaseAddress)+info.RegionSize;
+    if(end<=attacker)return;
+    const size_t bytes=(std::min)(kCollisionLayoutBytes,static_cast<size_t>(end-attacker));
+    if(!SafeReadMemory(attacker,capture.copied.data(),bytes))return;
+    capture.bytes=bytes;capture.pending=true;
+}
+void ResolveCapturedCollisionLayout(int playerNum) {
+    if(playerNum<1 || playerNum>2)return;
+    std::lock_guard<std::mutex> lock(collisionLayoutMutex);
+    auto& capture=collisionLayouts[playerNum-1];
+    if(!capture.pending)return;
+    capture.pending=false;
+    int found=-1;
+    for(size_t offset=0;offset+sizeof(uint32_t)<=capture.bytes;offset+=sizeof(uint32_t)) {
+        uint32_t candidate=0;std::memcpy(&candidate,capture.copied.data()+offset,sizeof(candidate));
+        if(candidate==capture.frameData){found=static_cast<int>(offset);break;}
+    }
+    auto& offset=playerNum==1?g_attackDataOffsetP1:g_attackDataOffsetP2;
+    offset.store(found,std::memory_order_release);
+    // A failed search is availability evidence for this move/resource only,
+    // not a permanent unsupported-world or unsupported-profile certificate.
+    collisionLayoutStatus[playerNum-1].store(found>=0?CollisionLayoutStatus::Ready:CollisionLayoutStatus::NotAvailableYet,std::memory_order_release);
+}
 }
 
 // We use __fastcall wrapper to intercept __thiscall
 static void __fastcall HookedHandleP2PCollision(void* gameSystem, void* /*edx*/, int attackerPtr, int defenderPtr, int attackerFrameData, const void* defenderFrameData) {
-    if (!s_collisionHookEnabled.load(std::memory_order_acquire)
+    auto hookExecution = MinHookUtils::EnterExecution(MinHookUtils::TicketFor<&HookedHandleP2PCollision>());
+    if (!hookExecution.Admitted() || !s_collisionHookEnabled.load(std::memory_order_acquire)
         || g_onlineModeActive.load(std::memory_order_relaxed)) {
         oHandleP2PCollision(gameSystem, attackerPtr, defenderPtr, attackerFrameData, defenderFrameData);
         return;
@@ -323,44 +372,10 @@ static void __fastcall HookedHandleP2PCollision(void* gameSystem, void* /*edx*/,
     const bool guardPointBranch = branchFlagsValid &&
         ExactGuardPointBranch(branchFlags, defenderY < 0.0);
 
-    // Cache last seen frame-data pointer unconditionally; AttackReader will resolve nested attack-data.
-    if (attackerPtr && attackerFrameData) {
-        uintptr_t frameData = (uintptr_t)attackerFrameData;
-        // Sanity range check, skip caching if not a plausible pointer, but DO NOT early-return
-        if (frameData >= 0x00400000 && frameData <= 0x0FFFFFFF) {
-            int playerNum = attackerPlayer;
-            int fdOff = playerNum == 1 ? g_attackDataOffsetP1.load()
-                      : playerNum == 2 ? g_attackDataOffsetP2.load() : -1;
-            // The function receives the owning player pointer directly. Only
-            // scan while discovering the structural frame-data offset, rather
-            // than scanning two 0x1200-byte objects on every collision call.
-            if (fdOff < 0) {
-                IdentifyPlayerByFrameData(
-                    frameData, players, playerNum, fdOff);
-            }
-            if (playerNum == 1) {
-                uintptr_t prev = g_lastAttackDataP1.exchange(frameData);
-                if (frameData && frameData != prev &&
-                    detailedLogging.load(std::memory_order_relaxed)) {
-                    LogOut(std::string("[COLLISION_HOOK] P1 frameData=") + FormatHexAddress(frameData), true);
-                }
-                if (fdOff >= 0 && g_attackDataOffsetP1.load() < 0) {
-                    g_attackDataOffsetP1.store(fdOff);
-                    LogOut("[COLLISION_HOOK] Discovered frameData offset P1: " + std::to_string(fdOff), true);
-                }
-            } else if (playerNum == 2) {
-                uintptr_t prev = g_lastAttackDataP2.exchange(frameData);
-                if (frameData && frameData != prev &&
-                    detailedLogging.load(std::memory_order_relaxed)) {
-                    LogOut(std::string("[COLLISION_HOOK] P2 frameData=") + FormatHexAddress(frameData), true);
-                }
-                if (fdOff >= 0 && g_attackDataOffsetP2.load() < 0) {
-                    g_attackDataOffsetP2.store(fdOff);
-                    LogOut("[COLLISION_HOOK] Discovered frameData offset P2: " + std::to_string(fdOff), true);
-                }
-            }
-        }
-    }
+    // Native attacker identity is authoritative. Structural discovery cannot
+    // replace it with zero or suppress a valid direct frame-data capture.
+    if(attackerFrameData>=0x00400000 && attackerFrameData<=0x0fffffff)
+        CaptureCollisionFrameData(attackerPlayer,attacker,static_cast<uintptr_t>(attackerFrameData),beforeAttacker.move);
 
     oHandleP2PCollision(gameSystem, attackerPtr, defenderPtr, attackerFrameData, defenderFrameData);
 
@@ -421,7 +436,8 @@ static void __fastcall HookedHandleP2PCollision(void* gameSystem, void* /*edx*/,
 static void __fastcall HookedHandleEntityToPlayerCollision(
     void* gameSystem, void* /*edx*/, int ownerPtr, int defenderPtr,
     int entitySlot, const void* defenderFrameData) {
-    if (!s_entityCollisionHookEnabled.load(std::memory_order_acquire) ||
+    auto hookExecution = MinHookUtils::EnterExecution(MinHookUtils::TicketFor<&HookedHandleEntityToPlayerCollision>());
+    if (!hookExecution.Admitted() || !s_entityCollisionHookEnabled.load(std::memory_order_acquire) ||
         g_onlineModeActive.load(std::memory_order_relaxed)) {
         oHandleEntityToPlayerCollision(
             gameSystem, ownerPtr, defenderPtr, entitySlot, defenderFrameData);
@@ -519,23 +535,21 @@ static void __fastcall HookedHandleEntityToPlayerCollision(
 }
 
 void InstallCollisionHook() {
+    Practice::PatchModule layoutModule{};
+    const bool layoutSupported=Practice::GetQualifiedMemorialImage(layoutModule);
+    collisionLayoutSupported.store(layoutSupported,std::memory_order_release);
+    if(!layoutSupported)for(auto& status:collisionLayoutStatus)status.store(CollisionLayoutStatus::UnsupportedLayout,std::memory_order_release);
     uintptr_t targetAddr = 0;
     if (!ResolveCollisionHookTarget(targetAddr)) {
         return;
     }
+    if (s_collisionHookTargetAddr != targetAddr && MinHookUtils::HasOwnedTarget(reinterpret_cast<void*>(s_collisionHookTargetAddr))) return;
     s_collisionHookTargetAddr = targetAddr;
 
     if (!s_collisionHookCreated.load(std::memory_order_acquire)) {
-        // Validate the PRISTINE retail prologue ONLY before the first install —
-        // i.e. before MinHook overwrites 0x767F60 with its own E9 trampoline JMP.
-        // InstallCollisionHook is re-entered on every online->offline transition
-        // (ExitNetplaySuspend), and the soft SetCollisionHookActive(false) used on
-        // suspend leaves the trampoline in place (it only flips an atomic flag,
-        // never MH_DisableHook). So on re-install the bytes ARE our own E9 stub;
-        // re-validating here would fail at byte 0 and permanently kill the
-        // re-enable. Same class of bug as the frontend signature gate — see
-        // reference_revival_prehook_battle_signature.
-        if (!ValidateCollisionHookTarget(targetAddr)) {
+        // Existing physical ownership retains its validated preimage across
+        // failed enables and pending retirement; validate only new acquisitions.
+        if (!MinHookUtils::HasOwnedTarget(reinterpret_cast<void*>(targetAddr)) && !ValidateCollisionHookTarget(targetAddr)) {
             LogOut("[COLLISION_HOOK] Refusing strict contact hook: 0x767F60 prologue mismatch", true);
             return;
         }
@@ -543,7 +557,7 @@ void InstallCollisionHook() {
                                                reinterpret_cast<void*>(&HookedHandleP2PCollision),
                                                reinterpret_cast<void**>(&oHandleP2PCollision),
                                                "[COLLISION_HOOK]",
-                                               "handleP2PCollision")) {
+                                               "handleP2PCollision", nullptr, nullptr, &MinHookUtils::TicketFor<&HookedHandleP2PCollision>())) {
             return;
         }
         s_collisionHookCreated.store(true, std::memory_order_release);
@@ -552,18 +566,19 @@ void InstallCollisionHook() {
 
     uintptr_t entityTargetAddr = 0;
     if (ResolveEntityCollisionHookTarget(entityTargetAddr)) {
+        if (s_entityCollisionHookTargetAddr != entityTargetAddr && MinHookUtils::HasOwnedTarget(reinterpret_cast<void*>(s_entityCollisionHookTargetAddr))) return;
         s_entityCollisionHookTargetAddr = entityTargetAddr;
         // Same first-install-only validation caveat as the direct hook above:
         // after creation the prologue is our trampoline, so re-validating on a
         // re-install would spuriously log a mismatch. Only check before creating.
         if (!s_entityCollisionHookCreated.load(std::memory_order_acquire)) {
-            if (!ValidateEntityCollisionHookTarget(entityTargetAddr)) {
+            if (!MinHookUtils::HasOwnedTarget(reinterpret_cast<void*>(entityTargetAddr)) && !ValidateEntityCollisionHookTarget(entityTargetAddr)) {
                 LogOut("[COLLISION_HOOK] Entity contact unavailable: 0x7697D0 prologue mismatch", true);
             } else if (MinHookUtils::CreateAndEnableHook(
                     reinterpret_cast<LPVOID>(entityTargetAddr),
                     reinterpret_cast<void*>(&HookedHandleEntityToPlayerCollision),
                     reinterpret_cast<void**>(&oHandleEntityToPlayerCollision),
-                    "[COLLISION_HOOK]", "handleEntityToPlayerCollision")) {
+                    "[COLLISION_HOOK]", "handleEntityToPlayerCollision", nullptr, nullptr, &MinHookUtils::TicketFor<&HookedHandleEntityToPlayerCollision>())) {
                 s_entityCollisionHookCreated.store(true, std::memory_order_release);
                 LogOut("[COLLISION_HOOK] Entity contact installed at " +
                        FormatHexAddress(entityTargetAddr), true);
@@ -580,6 +595,11 @@ void InstallCollisionHook() {
 }
 
 void SetCollisionHookActive(bool active) {
+    if (!active) {
+        MinHookUtils::CloseAdmission("[COLLISION_HOOK]");
+        (void)MinHookUtils::DisableOwnedTargets("[COLLISION_HOOK]", {});
+        (void)MinHookUtils::ReclaimDrainedTargets("[COLLISION_HOOK]", {});
+    }
     if (!s_collisionHookCreated.load(std::memory_order_acquire)) {
         if (active) {
             InstallCollisionHook();
@@ -587,58 +607,56 @@ void SetCollisionHookActive(bool active) {
         return;
     }
 
-    const bool entityActive = active &&
-        s_entityCollisionHookCreated.load(std::memory_order_acquire);
-    const bool directChanged =
-        s_collisionHookEnabled.exchange(active, std::memory_order_acq_rel) != active;
-    const bool entityChanged =
-        s_entityCollisionHookEnabled.exchange(entityActive, std::memory_order_acq_rel) !=
-        entityActive;
-    if (!directChanged && !entityChanged) {
-        return;
+    if (active) {
+        (void)PracticeHooks::PublishTargetActivation(MinHookUtils::OwnedHooks(),
+            s_collisionHookTargetAddr, s_collisionHookEnabled);
+        (void)PracticeHooks::PublishTargetActivation(MinHookUtils::OwnedHooks(),
+            s_entityCollisionHookTargetAddr, s_entityCollisionHookEnabled);
+    } else {
+        s_collisionHookEnabled.store(false,std::memory_order_release);
+        s_entityCollisionHookEnabled.store(false,std::memory_order_release);
     }
 
     LogOut(std::string("[COLLISION_HOOK] Collision hooks ") +
-           (active ? "enabled" : "disabled"), true);
+           (active ? "admission enabled" : "admission closed; physical retirement pending"), true);
 }
 
 void RemoveCollisionHook() {
-    if (s_entityCollisionHookTargetAddr &&
-        s_entityCollisionHookCreated.load(std::memory_order_acquire)) {
-        (void)MinHookUtils::DisableHook(
-            (LPVOID)s_entityCollisionHookTargetAddr, "[COLLISION_HOOK]",
-            "handleEntityToPlayerCollision");
-        (void)MinHookUtils::RemoveHook(
-            (LPVOID)s_entityCollisionHookTargetAddr, "[COLLISION_HOOK]",
-            "handleEntityToPlayerCollision");
-    }
-    s_entityCollisionHookEnabled.store(false, std::memory_order_release);
-    s_entityCollisionHookCreated.store(false, std::memory_order_release);
-    s_entityCollisionHookTargetAddr = 0;
-    oHandleEntityToPlayerCollision = nullptr;
-
-    if (s_collisionHookTargetAddr &&
-        s_collisionHookCreated.load(std::memory_order_acquire)) {
-        (void)MinHookUtils::DisableHook((LPVOID)s_collisionHookTargetAddr,
-                                       "[COLLISION_HOOK]", "handleP2PCollision");
-        (void)MinHookUtils::RemoveHook((LPVOID)s_collisionHookTargetAddr,
-                                      "[COLLISION_HOOK]", "handleP2PCollision");
-    }
-    s_collisionHookEnabled.store(false, std::memory_order_release);
-    s_collisionHookCreated.store(false, std::memory_order_release);
-    s_collisionHookTargetAddr = 0;
-    oHandleP2PCollision = nullptr;
+    SetCollisionHookActive(false);
+    // The registry includes successful creates whose enable failed; group flags
+    // are deliberately not used to decide whether an obligation exists.
+    (void)PracticeHooks::ReleaseRetiredSlot(MinHookUtils::OwnedHooks(),
+        s_entityCollisionHookTargetAddr, oHandleEntityToPlayerCollision,
+        s_entityCollisionHookCreated);
+    (void)PracticeHooks::ReleaseRetiredSlot(MinHookUtils::OwnedHooks(),
+        s_collisionHookTargetAddr, oHandleP2PCollision, s_collisionHookCreated);
 }
 
 uintptr_t GetCachedAttackDataForPlayer(int playerNum) {
+    if(playerNum<1 || playerNum>2)return 0;
+    ResolveCapturedCollisionLayout(playerNum);
     return (playerNum == 1) ? g_lastAttackDataP1.load() : g_lastAttackDataP2.load();
 }
 
 int GetAttackDataOffsetForPlayer(int playerNum) {
+    if(playerNum<1 || playerNum>2)return -1;
+    ResolveCapturedCollisionLayout(playerNum);
     return (playerNum == 1) ? g_attackDataOffsetP1.load() : g_attackDataOffsetP2.load();
 }
 
+CollisionLayoutStatus GetCollisionLayoutStatusForPlayer(int playerNum) {
+    if(playerNum<1 || playerNum>2)return CollisionLayoutStatus::UnsupportedLayout;
+    ResolveCapturedCollisionLayout(playerNum);
+    return collisionLayoutStatus[playerNum-1].load(std::memory_order_acquire);
+}
+
 void ResetCollisionHookSessionCaches(const char* reason) {
+    {
+        std::lock_guard<std::mutex> lock(collisionLayoutMutex);
+        collisionLayouts[0]={};collisionLayouts[1]={};
+        g_attackDataOffsetP1.store(-1);g_attackDataOffsetP2.store(-1);
+        for(auto& status:collisionLayoutStatus)status.store(collisionLayoutSupported.load()?CollisionLayoutStatus::NotAvailableYet:CollisionLayoutStatus::UnsupportedLayout);
+    }
     const uintptr_t lastP1 = g_lastAttackDataP1.exchange(0);
     const uintptr_t lastP2 = g_lastAttackDataP2.exchange(0);
 

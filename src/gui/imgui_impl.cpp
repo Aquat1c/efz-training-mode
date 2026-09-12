@@ -6,6 +6,8 @@
 #include "../include/gui/custom_menu/input.h"
 #include "../include/gui/custom_menu/renderer.h"
 #include "../include/game/practice_hotkey_gate.h"
+#include "../include/game/mission/mission_pause_menu.h"
+#include "../include/game/mission/tutorial_session.h"
 namespace PracticeOverlayGate { void SetMenuVisible(bool); }
 #include "../include/gui/overlay.h" 
 #include "../include/utils/utilities.h"
@@ -702,8 +704,13 @@ static void UpdateVirtualCursor(ImGuiIO& io) {
 }
 
 // Custom WndProc to handle ImGui input
+static bool TrainingUiInputActive() {
+    return XInputShim::IsPollingActive() &&
+        (g_imguiVisible || Mission::PauseMenu::WantsDraw() || Mission::TutorialSession::WantsDraw());
+}
+
 LRESULT CALLBACK ImGuiWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+    if (!g_imguiInitialized || !TrainingUiInputActive()) {
         return CallWindowProc(g_originalWndProc, hWnd, msg, wParam, lParam);
     }
 
@@ -721,7 +728,7 @@ LRESULT CALLBACK ImGuiWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         }
     }
 
-    // Always feed events to ImGui so backend state stays coherent even when UI is hidden
+    // Hidden/out-of-Battle menus must not accumulate input events.
     ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
 
     // Only intercept inputs when our UI is visible AND ImGui wants to capture them
@@ -890,8 +897,7 @@ namespace ImGuiImpl {
             g_externalFallbackHost = externalFallback;
             g_originalWndProc = nullptr;
 
-            ImGui_ImplWin32_EnableDpiAwareness();
-            LogOut("[IMGUI] Enabled DPI awareness", true);
+            // An injected overlay inherits the host's DPI policy.
 
             IMGUI_CHECKVERSION();
             ImGui::CreateContext();
@@ -977,6 +983,12 @@ namespace ImGuiImpl {
         void SetVisibilityInternal(bool visible) {
             const bool wasVisible = g_imguiVisible;
             g_imguiVisible = visible;
+            if (wasVisible != visible && ImGui::GetCurrentContext()) {
+                ImGuiIO& io = ImGui::GetIO();
+                io.ClearEventsQueue();
+                io.ClearInputKeys();
+                io.ClearInputMouse();
+            }
             ::menuOpen.store(visible);
             CharacterSettings::g_guiVisible.store(g_imguiVisible, std::memory_order_relaxed);
 
@@ -1116,7 +1128,7 @@ namespace ImGuiImpl {
                 D3DADAPTER_DEFAULT,
                 D3DDEVTYPE_HAL,
                 hwnd,
-                D3DCREATE_SOFTWARE_VERTEXPROCESSING,
+                D3DCREATE_SOFTWARE_VERTEXPROCESSING | D3DCREATE_FPU_PRESERVE,
                 &d3dpp,
                 &device);
             if (FAILED(hr) || !device) {
@@ -1161,7 +1173,7 @@ namespace ImGuiImpl {
                     break;
                 }
 
-                if (!g_imguiVisible) {
+                if (!g_imguiVisible || !XInputShim::IsPollingActive()) {
                     Sleep(16);
                     continue;
                 }
@@ -1314,7 +1326,7 @@ namespace ImGuiImpl {
     }
     
     LRESULT WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-        // Always provide events to ImGui backend
+        if (!g_imguiInitialized || !TrainingUiInputActive()) return 0;
         ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
 
         if (g_imguiVisible) {
@@ -1351,6 +1363,7 @@ namespace ImGuiImpl {
         // Always force ImGui to render against the backbuffer size (not the window size)
         io.DisplaySize = ImVec2(baseW, baseH);
         io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
+        if (!TrainingUiInputActive()) return;
 
         // Remap OS mouse to backbuffer coordinates (letterbox/pillarbox aware, DPI-robust)
         HWND hwnd = GetActiveHostWindow();
