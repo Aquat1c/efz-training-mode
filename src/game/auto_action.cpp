@@ -5636,7 +5636,8 @@ bool TutorialP2ControlLeaseActive() {
     return g_tutorialP2Token.load(std::memory_order_acquire) != 0;
 }
 
-bool ReleaseTutorialP2Control(uint64_t token) {
+static bool ReleaseTutorialP2ControlImpl(uint64_t token,
+                                        const EfzTmEntryV1* heldWorld) {
     if (token == 0) return true;
     std::lock_guard<std::recursive_mutex> lk(g_p2ControlMutex);
     if (g_tutorialP2Token.load(std::memory_order_acquire) != token) return true;
@@ -5647,7 +5648,7 @@ bool ReleaseTutorialP2Control(uint64_t token) {
     // Netplay suspend already drained offline input owners before publishing
     // online mode; teardown after that point must not write local controller
     // state back over netplay's human-control setup.
-    if (!online) {
+    if (!online && !heldWorld) {
         CancelAutoActionNormalPulse(2);
         if (IsAutoActionNormalPulseActive(2) ||
             IsAutoActionNormalPulseOwningImmediateRegisters(2)) {
@@ -5657,6 +5658,7 @@ bool ReleaseTutorialP2Control(uint64_t token) {
     }
 
     const TutorialP2Snapshot snapshot = g_tutorialP2Snapshot;
+    if (online && heldWorld) return false;
     if (online) {
         LogOut("[TUTORIAL][INPUT_LEASE] Netplay active; discarded saved P2 controller snapshot without writes", true);
         g_pendingControlRestore.store(false, std::memory_order_release);
@@ -5667,15 +5669,15 @@ bool ReleaseTutorialP2Control(uint64_t token) {
         return true;
     }
 
-    const uintptr_t base = GetEFZBase();
-    uintptr_t gameState = 0;
-    uintptr_t p2Char = 0;
-    if (!base ||
+    const uintptr_t base = heldWorld ? heldWorld->efzBase : GetEFZBase();
+    uintptr_t gameState = heldWorld ? heldWorld->gameSystem : 0;
+    uintptr_t p2Char = heldWorld ? heldWorld->player2 : 0;
+    if (!heldWorld && (!base ||
         !SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gameState,
                         sizeof(gameState)) ||
         !SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2Char,
                         sizeof(p2Char)) ||
-        !gameState || !p2Char) {
+        !gameState || !p2Char)) {
         g_tutorialP2ReleaseRequested.store(true, std::memory_order_release);
         LogOut("[TUTORIAL][INPUT_LEASE] P2 world read failed; retaining restore token",
                true);
@@ -5684,7 +5686,7 @@ bool ReleaseTutorialP2Control(uint64_t token) {
 
     if (gameState == snapshot.gameState && p2Char == snapshot.character) {
         constexpr uintptr_t kP2CpuFlagOffset = 4932;
-        if (!FullCleanupAfterToggle(2)) {
+        if (!heldWorld && !FullCleanupAfterToggle(2)) {
             g_tutorialP2ReleaseRequested.store(true, std::memory_order_release);
             LogOut("[TUTORIAL][INPUT_LEASE] P2 cleanup failed; retaining restore token",
                    true);
@@ -5711,6 +5713,7 @@ bool ReleaseTutorialP2Control(uint64_t token) {
             return false;
         }
     } else {
+        if (heldWorld) return false;
         LogOut("[TUTORIAL][INPUT_LEASE] P2 world changed; stale flags were not restored", true);
     }
     g_pendingControlRestore.store(false, std::memory_order_release);
@@ -5721,6 +5724,10 @@ bool ReleaseTutorialP2Control(uint64_t token) {
     LogOut("[TUTORIAL][INPUT_LEASE] Released P2 control token=" +
            std::to_string(token), true);
     return true;
+}
+
+bool ReleaseTutorialP2Control(uint64_t token) {
+    return ReleaseTutorialP2ControlImpl(token, nullptr);
 }
 
 static void ScheduleLegacyP2RestoreRetry(const char* reason) {
@@ -5735,11 +5742,13 @@ static void ScheduleLegacyP2RestoreRetry(const char* reason) {
 // restored and verified, or when a proven replacement world made it stale.
 static bool RestoreLegacyP2ControllerLocked(const char* operation,
                                             bool scrubRuntime,
-                                            bool preserveMotionToken) {
+                                            bool preserveMotionToken,
+                                            const EfzTmEntryV1* heldWorld = nullptr) {
     if (!g_p2ControlOverridden.load(std::memory_order_acquire)) return true;
     if (g_tutorialP2Token.load(std::memory_order_acquire) != 0) return false;
 
     if (g_onlineModeActive.load(std::memory_order_acquire)) {
+        if (heldWorld) return false;
         // Netplay publication happens only after the offline drain. Once online,
         // this path is bookkeeping-only and must not write controller memory.
         g_p2ControlOverridden.store(false, std::memory_order_release);
@@ -5754,21 +5763,22 @@ static bool RestoreLegacyP2ControllerLocked(const char* operation,
         return false;
     }
 
-    const uintptr_t base = GetEFZBase();
-    uintptr_t gameState = 0;
-    uintptr_t character = 0;
-    if (!base ||
+    const uintptr_t base = heldWorld ? heldWorld->efzBase : GetEFZBase();
+    uintptr_t gameState = heldWorld ? heldWorld->gameSystem : 0;
+    uintptr_t character = heldWorld ? heldWorld->player2 : 0;
+    if (!heldWorld && (!base ||
         !SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gameState,
                         sizeof(gameState)) ||
         !SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &character,
                         sizeof(character)) ||
-        !gameState || !character) {
+        !gameState || !character)) {
         ScheduleLegacyP2RestoreRetry("world read failed");
         return false;
     }
 
     if (gameState != g_legacyP2ControlSnapshot.gameState ||
         character != g_legacyP2ControlSnapshot.character) {
+        if (heldWorld) return false;
         LogOut(std::string("[AUTO-ACTION][CONTROL] ") + operation +
                    " discarded stale P2 snapshot after world replacement",
                true);
@@ -5820,6 +5830,26 @@ static bool RestoreLegacyP2ControllerLocked(const char* operation,
     g_pendingControlRestore.store(false, std::memory_order_release);
     g_pendingRestoreTimestamp.store(0, std::memory_order_release);
     return true;
+}
+
+uint32_t RetireAutoActionControllers(const EfzTmEntryV1& world) {
+    std::lock_guard<std::recursive_mutex> lock(g_p2ControlMutex);
+    if (world.nativeThreadId != GetCurrentThreadId() || !world.gameSystem ||
+        !world.player2 || g_onlineModeActive.load(std::memory_order_acquire))
+        return EFZ_TM_FAULTED;
+    const uint64_t tutorial = g_tutorialP2Token.load(std::memory_order_acquire);
+    if (tutorial && (g_tutorialP2Snapshot.gameState != world.gameSystem ||
+        g_tutorialP2Snapshot.character != world.player2)) return EFZ_TM_FAULTED;
+    if (g_legacyP2ControlSnapshot.valid &&
+        (g_legacyP2ControlSnapshot.gameState != world.gameSystem ||
+         g_legacyP2ControlSnapshot.character != world.player2)) return EFZ_TM_FAULTED;
+    if (IsP2AutoActionMotionTransactionActive() ||
+        IsAutoActionNormalPulseActive(2) ||
+        IsAutoActionNormalPulseOwningImmediateRegisters(2)) return EFZ_TM_PENDING;
+    if (!ReleaseTutorialP2ControlImpl(tutorial, &world)) return EFZ_TM_PENDING;
+    // The native-input participant already restored command/token/raw ownership.
+    return RestoreLegacyP2ControllerLocked("RetirePracticeInput", false, true, &world)
+        ? EFZ_TM_READY : EFZ_TM_PENDING;
 }
 
 // Enable P2 human control for the legacy long-lived macro owner and save its

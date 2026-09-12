@@ -17,9 +17,11 @@ uintptr_t GetCachedAttackDataForPlayer(int playerNum);
 // Returns the discovered offset (in bytes) from the player base pointer to the
 // field that holds the current attack data pointer, or -1 if not yet found.
 int GetAttackDataOffsetForPlayer(int playerNum);
+enum class CollisionLayoutStatus : uint8_t {NotAvailableYet,UnsupportedLayout,Ready};
+CollisionLayoutStatus GetCollisionLayoutStatusForPlayer(int playerNum);
 
 // Clears session-scoped cached frame-data pointers captured by the collision hook.
-// Discovered structural offsets are intentionally preserved.
+// Structural discovery is retried from a new captured world/resource.
 void ResetCollisionHookSessionCaches(const char* reason);
 
 // Strict direct player-contact event source. Events are published from inside

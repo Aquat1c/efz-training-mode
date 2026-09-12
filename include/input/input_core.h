@@ -64,6 +64,8 @@ uintptr_t GetPlayerPointer(int playerNum);
 std::string DecodeInputMask(uint8_t inputMask);
 bool WritePlayerInput(int playerNum, uint8_t inputMask);
 bool WritePlayerInputImmediate(int playerNum, uint8_t inputMask);
+// Caller owns the captured fighter's lifetime and input producer boundary.
+bool WritePlayerInputImmediateAt(uintptr_t capturedPlayer, uint8_t inputMask);
 bool WritePlayerInputToBuffer(int playerNum, uint8_t inputMask);
 // Utility: forcibly reset the player's circular input buffer index to 0.
 // Used before queuing certain motion sequences (e.g., forward dash + chained normal)
@@ -81,6 +83,7 @@ uint16_t GetPlayerMoveID(int playerNum);
 // Clear engine command flags (command buffer and dash command) for a player.
 // This helps prevent the engine from initiating a move after our macro/queue finishes.
 bool ClearPlayerCommandFlags(int playerNum);
+bool ClearPlayerCommandFlagsAt(uintptr_t capturedPlayer);
 
 // Neutralize the player's current motion token to stop in-flight recognizers
 // from triggering after a control toggle or macro completion.
@@ -93,3 +96,5 @@ bool NeutralizeMotionToken(int playerNum);
 // - Clear immediate input registers (neutral)
 // Returns true if all best-effort writes succeeded.
 bool FullCleanupAfterToggle(int playerNum);
+// Caller owns and retains this exact fighter; no current-player resolution.
+bool FullCleanupAfterToggleAt(uintptr_t capturedPlayer);

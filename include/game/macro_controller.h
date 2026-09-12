@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+struct EfzTmEntryV1;
 
 // Lightweight Practice-owned macro controller (NOW mode first cut).
 // - Three-stage record: arm PreRecord (grants P2 control), explicitly start,
@@ -142,6 +143,12 @@ bool PlayForPlayer(int playerNum, int startTick = 0,
                    bool exclusiveInput = false);
 void Stop();           // Force stop (record/replay), restore state
 void UnswapThenStop(); // Restore default mapping (unswap+CPU) first, then stop
+// Private timeline only. Input ownership must already be stopped and drained.
+// Preserves recorded slots, streams and the selected slot/player settings.
+void ResetTimeline();
+bool BindPracticeWorld(const EfzTmEntryV1& world);
+void CancelPracticeWork();
+uint32_t RetirePracticeWorld(const EfzTmEntryV1& heldWorld);
 
 // Player-selectable recording/replay used by mission demonstrations. Regular
 // Practice macros keep using P2 through ToggleRecord()/Play(); mission capture

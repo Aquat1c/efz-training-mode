@@ -119,6 +119,12 @@ int g_writeIdx = 0;        // next slot to write (mod kBarMemory)
 int g_filledFrames = 0;    // total frames written (capped at large int)
 std::mutex g_lock;
 
+struct PausedStepState {
+    bool wasPaused = false;
+    unsigned int lastStep = 0;
+};
+PausedStepState g_pausedStep{};
+
 // ===== Activity / idle-tail / shared-hitstop state (MBAACC port) =====
 //
 // MBAACC's BarHandling has three states:
@@ -1401,6 +1407,12 @@ void Reset() {
     ClearBarsNoLock(true);
 }
 
+void ResetTimeline() {
+    std::lock_guard<std::mutex> lock(g_lock);
+    ClearBarsNoLock(true);
+    g_pausedStep = PausedStepState{};
+}
+
 void TickSample() {
     if (!g_enabled.load()) return;
 
@@ -1416,8 +1428,8 @@ void TickSample() {
         return;
     }
 
-    static bool s_wasPaused = false;
-    static unsigned int s_lastPausedStep = 0;
+    auto& s_wasPaused = g_pausedStep.wasPaused;
+    auto& s_lastPausedStep = g_pausedStep.lastStep;
     const bool paused = Framestep::IsPaused() || PauseIntegration::IsPausedOrFrozen();
     if (paused) {
         const unsigned int step = Framestep::GetStepCounter();

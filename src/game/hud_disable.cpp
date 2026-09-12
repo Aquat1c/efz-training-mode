@@ -108,6 +108,8 @@ bool ShouldSkipElement(int seam, int destY, uint32_t mask) {
 
 // --- renderBattleScreen: whole-HUD suppression via the engine's own gate. ---
 int __fastcall Hooked_renderBattleScreen(void* battleContext, void* /*edx*/) {
+    auto execution=MinHookUtils::EnterExecution(MinHookUtils::TicketFor<&Hooked_renderBattleScreen>());
+    if (!execution.Admitted()) return oRenderBattleScreen(battleContext);
     if (!s_hidden.load(std::memory_order_relaxed) ||
         g_onlineModeActive.load(std::memory_order_relaxed) || !battleContext) {
         return oRenderBattleScreen(battleContext);
@@ -132,6 +134,8 @@ int __fastcall Hooked_renderBattleScreen(void* battleContext, void* /*edx*/) {
 // --- Seam markers: tag blits drawn by these functions so the blit filter can
 //     tell HUD draws from gameplay sprites. ---
 unsigned __fastcall Hooked_renderGameHUD(void* gs, void* /*edx*/) {
+    auto execution=MinHookUtils::EnterExecution(MinHookUtils::TicketFor<&Hooked_renderGameHUD>());
+    if (!execution.Admitted()) return oRenderGameHUD(gs);
     if (g_onlineModeActive.load(std::memory_order_relaxed)) return oRenderGameHUD(gs);
     const int prev = GetCurrentSeam(); SetCurrentSeam(SEAM_TOP);
     const unsigned r = oRenderGameHUD(gs);
@@ -139,6 +143,8 @@ unsigned __fastcall Hooked_renderGameHUD(void* gs, void* /*edx*/) {
     return r;
 }
 void __fastcall Hooked_renderMeters(void* gs, void* /*edx*/) {
+    auto execution=MinHookUtils::EnterExecution(MinHookUtils::TicketFor<&Hooked_renderMeters>());
+    if (!execution.Admitted()) { oRenderMeters(gs); return; }
     if (g_onlineModeActive.load(std::memory_order_relaxed)) { oRenderMeters(gs); return; }
     const int prev = GetCurrentSeam(); SetCurrentSeam(SEAM_BOTTOM);
     oRenderMeters(gs);
@@ -147,6 +153,8 @@ void __fastcall Hooked_renderMeters(void* gs, void* /*edx*/) {
 
 // --- Combo panel: skipped on master hide or the per-element combo bit. ---
 int __fastcall Hooked_renderPlayerStats(void* gameSystem, void* /*edx*/, void* playerData) {
+    auto execution=MinHookUtils::EnterExecution(MinHookUtils::TicketFor<&Hooked_renderPlayerStats>());
+    if (!execution.Admitted()) return oRenderPlayerStats(gameSystem, playerData);
     if (!g_onlineModeActive.load(std::memory_order_relaxed)) {
         if (s_hidden.load(std::memory_order_relaxed) ||
             (s_elementMask.load(std::memory_order_relaxed) & HudDisable::ElemComboPanel)) {
@@ -159,6 +167,8 @@ int __fastcall Hooked_renderPlayerStats(void* gameSystem, void* /*edx*/, void* p
 // --- The two software blitters: per-element filter, active only inside a HUD seam. ---
 int __fastcall Hooked_blitTransparency(void* gfx, void* /*edx*/, int dX, int dY, int dR, int dB,
     int surf, int sX, int sY, int sR, int sB, char key, int flip) {
+    auto execution=MinHookUtils::EnterExecution(MinHookUtils::TicketFor<&Hooked_blitTransparency>());
+    if (!execution.Admitted()) return oBlitTransparency(gfx,dX,dY,dR,dB,surf,sX,sY,sR,sB,key,flip);
     const int seam = GetCurrentSeam();
     if (seam != SEAM_NONE && !s_hidden.load(std::memory_order_relaxed) &&
         !g_onlineModeActive.load(std::memory_order_relaxed)) {
@@ -169,6 +179,8 @@ int __fastcall Hooked_blitTransparency(void* gfx, void* /*edx*/, int dX, int dY,
 }
 int __fastcall Hooked_blitPalette(void* gfx, void* /*edx*/, int dX, int dY, int dR, int dB,
     int surf, int sX, int sY, int sR, int sB, unsigned char key, int flip, char pal) {
+    auto execution=MinHookUtils::EnterExecution(MinHookUtils::TicketFor<&Hooked_blitPalette>());
+    if (!execution.Admitted()) return oBlitPalette(gfx,dX,dY,dR,dB,surf,sX,sY,sR,sB,key,flip,pal);
     const int seam = GetCurrentSeam();
     if (seam != SEAM_NONE && !s_hidden.load(std::memory_order_relaxed) &&
         !g_onlineModeActive.load(std::memory_order_relaxed)) {
@@ -180,6 +192,7 @@ int __fastcall Hooked_blitPalette(void* gfx, void* /*edx*/, int dX, int dY, int 
 
 bool SignatureMatches(uintptr_t address, const uint8_t* expected, size_t length,
                       const char* name) {
+    if (MinHookUtils::HasOwnedTarget(reinterpret_cast<void*>(address))) return true;
     uint8_t actual[16] = {};
     if (!expected || length == 0 || length > sizeof(actual) ||
         !SafeReadMemory(address, actual, static_cast<uint32_t>(length)) ||
@@ -191,28 +204,19 @@ bool SignatureMatches(uintptr_t address, const uint8_t* expected, size_t length,
     return true;
 }
 
-bool Hook(uintptr_t base, uintptr_t off, void* detour, void** orig, const char* name) {
-    const uintptr_t addr = base + off;
-    bool alreadyCreated = false;
-    if (!MinHookUtils::CreateHook(reinterpret_cast<void*>(addr), detour, orig,
-                                  "[HUD_DISABLE]", name, &alreadyCreated)) {
-        LogOut(std::string("[HUD_DISABLE] hook failed: ") + name, true);
-        return false;
-    }
-    if (alreadyCreated) {
-        LogOut(std::string("[HUD_DISABLE] Refusing foreign/already-created hook: ") + name, true);
-        return false;
-    }
-    if (s_hookCount >= 6) {
-        (void)MinHookUtils::RemoveHook(reinterpret_cast<void*>(addr), "[HUD_DISABLE]", name);
-        return false;
-    }
-    s_hooks[s_hookCount++] = { addr, name };
-    if (!MinHookUtils::EnableHook(reinterpret_cast<void*>(addr), "[HUD_DISABLE]", name)) {
-        if (MinHookUtils::RemoveHook(reinterpret_cast<void*>(addr),
-                                     "[HUD_DISABLE]", name)) {
-            s_hooks[--s_hookCount] = {};
-        }
+bool Hook(uintptr_t base, uintptr_t off, void* detour, void** orig, const char* name,
+          PracticeHooks::CallbackTicket& ticket) {
+    const uintptr_t addr=base+off;
+    int slot=0;
+    while(slot<s_hookCount && s_hooks[slot].addr!=addr) ++slot;
+    if(slot==s_hookCount && s_hookCount>=6) return false;
+    if (!MinHookUtils::CreateHook(reinterpret_cast<void*>(addr),detour,orig,
+            "[HUD_DISABLE]",name,nullptr,&ticket)) return false;
+    // Existing same-owner retries reuse their slot; never erase a retained
+    // original or reject an acquisition merely because this DLL already owns it.
+    if(slot==s_hookCount) s_hooks[s_hookCount++]={addr,name};
+    if(!MinHookUtils::EnableHook(reinterpret_cast<void*>(addr),"[HUD_DISABLE]",name)) {
+        (void)MinHookUtils::RemoveHook(reinterpret_cast<void*>(addr),"[HUD_DISABLE]",name);
         return false;
     }
     return true;
@@ -251,7 +255,7 @@ bool RollBackHooks() {
 namespace HudDisable {
 
 void Install() {
-    if (s_created.load(std::memory_order_acquire)) return;
+    if (s_created.load(std::memory_order_acquire) && MinHookUtils::EnableOwnedTargets("[HUD_DISABLE]")) return;
     uintptr_t base = GetEFZBase();
     if (!base) { LogOut("[HUD_DISABLE] Failed to get game base address.", true); return; }
 
@@ -280,22 +284,22 @@ void Install() {
 
     bool installed = Hook(base, RENDER_BATTLE_SCREEN_OFFSET,
                           reinterpret_cast<void*>(&Hooked_renderBattleScreen),
-                          reinterpret_cast<void**>(&oRenderBattleScreen), "renderBattleScreen");
+                          reinterpret_cast<void**>(&oRenderBattleScreen), "renderBattleScreen", MinHookUtils::TicketFor<&Hooked_renderBattleScreen>());
     if (installed) installed = Hook(base, RENDER_PLAYER_STATS_OFFSET,
                                     reinterpret_cast<void*>(&Hooked_renderPlayerStats),
-                                    reinterpret_cast<void**>(&oRenderPlayerStats), "renderPlayerStatsPanel");
+                                    reinterpret_cast<void**>(&oRenderPlayerStats), "renderPlayerStatsPanel", MinHookUtils::TicketFor<&Hooked_renderPlayerStats>());
     if (installed) installed = Hook(base, RENDER_GAME_HUD_OFFSET,
                                     reinterpret_cast<void*>(&Hooked_renderGameHUD),
-                                    reinterpret_cast<void**>(&oRenderGameHUD), "renderGameHUD");
+                                    reinterpret_cast<void**>(&oRenderGameHUD), "renderGameHUD", MinHookUtils::TicketFor<&Hooked_renderGameHUD>());
     if (installed) installed = Hook(base, RENDER_METERS_OFFSET,
                                     reinterpret_cast<void*>(&Hooked_renderMeters),
-                                    reinterpret_cast<void**>(&oRenderMeters), "renderMeters");
+                                    reinterpret_cast<void**>(&oRenderMeters), "renderMeters", MinHookUtils::TicketFor<&Hooked_renderMeters>());
     if (installed) installed = Hook(base, BLIT_TRANSPARENCY_OFFSET,
                                     reinterpret_cast<void*>(&Hooked_blitTransparency),
-                                    reinterpret_cast<void**>(&oBlitTransparency), "blitTransparency");
+                                    reinterpret_cast<void**>(&oBlitTransparency), "blitTransparency", MinHookUtils::TicketFor<&Hooked_blitTransparency>());
     if (installed) installed = Hook(base, BLIT_PALETTE_OFFSET,
                                     reinterpret_cast<void*>(&Hooked_blitPalette),
-                                    reinterpret_cast<void**>(&oBlitPalette), "blitPalette");
+                                    reinterpret_cast<void**>(&oBlitPalette), "blitPalette", MinHookUtils::TicketFor<&Hooked_blitPalette>());
 
     if (installed && s_hookCount == 6) {
         s_created.store(true, std::memory_order_release);
@@ -303,7 +307,7 @@ void Install() {
     } else {
         const bool removed = RollBackHooks();
         if (removed) ReleaseSeamTls();
-        else s_created.store(true, std::memory_order_release);
+        s_created.store(false, std::memory_order_release);
         LogOut("[HUD_DISABLE] Hook install rolled back; HUD toggle inactive.", true);
     }
 }
@@ -311,7 +315,7 @@ void Install() {
 void Remove() {
     const bool removed = RollBackHooks();
     if (removed) ReleaseSeamTls();
-    s_created.store(!removed, std::memory_order_release);
+    s_created.store(false, std::memory_order_release);
 }
 
 void SetHidden(bool hidden) {

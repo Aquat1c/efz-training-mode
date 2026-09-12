@@ -1,3 +1,5 @@
+#include "../include/utils/audio_runtime_state.h"
+#include "../include/utils/audio_file_control.h"
 #include "../include/utils/config.h"
 #include "../include/core/logger.h"
 #include "../include/utils/utilities.h"
@@ -35,6 +37,7 @@ namespace Config {
     
     // Internal representation of the ini file
     static std::unordered_map<std::string, std::unordered_map<std::string, std::string>> iniData;
+#include "../include/utils/audio_config_publication.inl"
     
     // Forward declare helper methods
     void SetIniValue(const std::string& section, const std::string& key, const std::string& value);
@@ -775,6 +778,7 @@ namespace Config {
             settings.savestateBackendMode   = GetValueInt("General", "savestateBackendMode", 2);
             if (settings.savestateBackendMode < 0 || settings.savestateBackendMode > 2) settings.savestateBackendMode = 2;
             settings.savestateLoadCustomPalettes = GetValueBool("General", "savestateLoadCustomPalettes", true);
+            PublishLoadedAudioSettings();
             LogOut("[CONFIG] Settings loaded successfully", true);
             LogOut("[CONFIG] UseImGui: " + std::to_string(settings.useImGui), true);
             LogOut("[CONFIG] DetailedLogging: " + std::to_string(settings.detailedLogging), true);
@@ -1027,6 +1031,7 @@ namespace Config {
     }
     
     void SetSetting(const std::string& section, const std::string& key, const std::string& value) {
+        if (TrySetAudioSetting(section, key, value)) return;
         // Normalize for storage
         std::string sec = ToLower(section);
         std::string k = ToLower(key);
@@ -1040,16 +1045,6 @@ namespace Config {
             if (k == "enabledebugfilelog") settings.enableDebugFileLog = (value == "1");
             if (k == "enableconsole") settings.enableConsole = (value == "1");
             if (k == "showframebar") settings.showFrameBar = (value == "1");
-            if (k == "bgmvolumepercent") {
-                try { settings.bgmVolumePercent = std::stoi(value); } catch (...) { settings.bgmVolumePercent = 100; }
-                if (settings.bgmVolumePercent < 0) settings.bgmVolumePercent = 0;
-                if (settings.bgmVolumePercent > 100) settings.bgmVolumePercent = 100;
-            }
-            if (k == "sevolumepercent") {
-                try { settings.seVolumePercent = std::stoi(value); } catch (...) { settings.seVolumePercent = 100; }
-                if (settings.seVolumePercent < 0) settings.seVolumePercent = 0;
-                if (settings.seVolumePercent > 100) settings.seVolumePercent = 100;
-            }
             if (k == "framebartimingmode") {
                 try { settings.frameBarTimingMode = std::stoi(value); } catch (...) { settings.frameBarTimingMode = 0; }
                 if (settings.frameBarTimingMode < 0 || settings.frameBarTimingMode > 1) settings.frameBarTimingMode = 0;

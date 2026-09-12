@@ -241,156 +241,48 @@ short GetCurrentMoveID(int player) {
 }
 
 void UpdateConsoleTitle() {
-    // Keep this thread at normal priority since you want it to keep up with the game
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
     std::string lastTitle;
-    int sleepMs = 100; // fast when changing
-    const int minSleepMs = 100;
-    const int maxSleepMs = 250; // slower when idle/no match
+    int sleepMs = 100;
     int stableIters = 0;
-    
-    while (true) {
-        // Exit if shutting down
-        if (g_isShuttingDown.load()) break;
 
-        // If the console window isn't present or visible, back off and try later
+    while (!g_isShuttingDown.load()) {
+        // Diagnostics consume monitor snapshots; they do not discover fighters,
+        // poll netplay state or publish data back into gameplay caches.
+        if (g_onlineModeActive.load() || !g_featuresEnabled.load()) {
+            Sleep(500);
+            continue;
+        }
         HWND hWnd = GetConsoleWindow();
         if (hWnd == nullptr || !IsWindow(hWnd) || !IsWindowVisible(hWnd)) {
             Sleep(500);
             continue;
         }
-
-        char title[512];
-        if (g_onlineModeActive.load()) {
-            NetplayRuntimeState netplayState = GetNetplayRuntimeState();
-            sprintf_s(title, sizeof(title),
-                "EFZ Training Mode - Suspended for Netplay | Source: %s | Mode: %d | Phase: %d | Activity: %d",
-                NetplayStateSourceName(netplayState.source),
-                netplayState.exportAvailable ? netplayState.exportState.sessionMode : static_cast<int>(netplayState.legacyOnlineState),
-                netplayState.exportAvailable ? netplayState.exportState.sessionPhase : -1,
-                netplayState.exportAvailable ? static_cast<int>(netplayState.exportState.activityPhase) : -1);
-            if (lastTitle != title) {
-                SetConsoleTitleA(title);
-                lastTitle = title;
-            }
-            Sleep(1000);
+        FrameSnapshot snap{};
+        if (!TryGetLatestSnapshot(snap, 500) || snap.mode != GameMode::Practice) {
+            Sleep(500);
             continue;
         }
-
-        uintptr_t base = GetEFZBase();
-        
-        // Keep the fast update rate as requested - every 250ms
-        if (base != 0) {
-            // Prefer snapshot for fast reads
-            FrameSnapshot snap{};
-            bool haveSnap = TryGetLatestSnapshot(snap, 500);
-
-            if (haveSnap) {
-                displayData.hp1 = snap.p1Hp; displayData.hp2 = snap.p2Hp;
-                displayData.meter1 = snap.p1Meter; displayData.meter2 = snap.p2Meter;
-                displayData.rf1 = snap.p1RF; displayData.rf2 = snap.p2RF;
-                displayData.x1 = snap.p1X; displayData.y1 = snap.p1Y;
-                displayData.x2 = snap.p2X; displayData.y2 = snap.p2Y;
-                // Fill char names via ID mapping when available
-                if (snap.p1CharId >= 0) {
-                    auto n1 = CharacterSettings::GetCharacterName(snap.p1CharId);
-                    strncpy_s(displayData.p1CharName, n1.c_str(), sizeof(displayData.p1CharName)-1);
-                }
-                if (snap.p2CharId >= 0) {
-                    auto n2 = CharacterSettings::GetCharacterName(snap.p2CharId);
-                    strncpy_s(displayData.p2CharName, n2.c_str(), sizeof(displayData.p2CharName)-1);
-                }
-            } else {
-                // Minimal fallback: refresh addresses occasionally and read values (including names)
-                static uintptr_t cachedAddresses[12] = {0};
-                static int titleCacheCounter = 0;
-                static uint32_t titleCacheGeneration = 0;
-                const uint32_t lifecycleGeneration = GetRuntimeLifecycleGeneration();
-                if (titleCacheGeneration != lifecycleGeneration) {
-                    for (uintptr_t& addr : cachedAddresses) {
-                        addr = 0;
-                    }
-                    titleCacheCounter = 60;
-                    titleCacheGeneration = lifecycleGeneration;
-                    LogOut("[LIFECYCLE] Reset title fallback address cache for generation "
-                        + std::to_string(lifecycleGeneration), detailedLogging.load());
-                }
-                // Refresh cached addresses less frequently to reduce pointer resolution overhead
-                if (titleCacheCounter++ >= 60) {
-                    titleCacheCounter = 0;
-                    cachedAddresses[0] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET);
-                    cachedAddresses[1] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, METER_OFFSET);
-                    cachedAddresses[2] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, RF_OFFSET);
-                    cachedAddresses[3] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
-                    cachedAddresses[4] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
-                    cachedAddresses[5] = ResolvePointer(base, EFZ_BASE_OFFSET_P1, CHARACTER_NAME_OFFSET);
-                    cachedAddresses[6] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, HP_OFFSET);
-                    cachedAddresses[7] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, METER_OFFSET);
-                    cachedAddresses[8] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, RF_OFFSET);
-                    cachedAddresses[9] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET);
-                    cachedAddresses[10] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET);
-                    cachedAddresses[11] = ResolvePointer(base, EFZ_BASE_OFFSET_P2, CHARACTER_NAME_OFFSET);
-                }
-                if (cachedAddresses[0]) SafeReadMemory(cachedAddresses[0], &displayData.hp1, sizeof(int));
-                if (cachedAddresses[1]) { unsigned short w=0; SafeReadMemory(cachedAddresses[1], &w, sizeof(w)); displayData.meter1 = (int)w; }
-                if (cachedAddresses[2]) SafeReadMemory(cachedAddresses[2], &displayData.rf1, sizeof(double));
-                if (cachedAddresses[3]) SafeReadMemory(cachedAddresses[3], &displayData.x1, sizeof(double));
-                if (cachedAddresses[4]) SafeReadMemory(cachedAddresses[4], &displayData.y1, sizeof(double));
-                if (cachedAddresses[5]) SafeReadMemory(cachedAddresses[5], &displayData.p1CharName, sizeof(displayData.p1CharName) - 1);
-                if (cachedAddresses[6]) SafeReadMemory(cachedAddresses[6], &displayData.hp2, sizeof(int));
-                if (cachedAddresses[7]) { unsigned short w=0; SafeReadMemory(cachedAddresses[7], &w, sizeof(w)); displayData.meter2 = (int)w; }
-                if (cachedAddresses[8]) SafeReadMemory(cachedAddresses[8], &displayData.rf2, sizeof(double));
-                if (cachedAddresses[9]) SafeReadMemory(cachedAddresses[9], &displayData.x2, sizeof(double));
-                if (cachedAddresses[10]) SafeReadMemory(cachedAddresses[10], &displayData.y2, sizeof(double));
-                if (cachedAddresses[11]) SafeReadMemory(cachedAddresses[11], &displayData.p2CharName, sizeof(displayData.p2CharName) - 1);
-            }
-
-            // Feed the shared positions cache
-            UpdatePositionCache(displayData.x1, displayData.y1, displayData.x2, displayData.y2);
-        }
-        
-        // Check if we can access game data or if all values are default/zero
-        bool gameActive = base != 0;
-        bool allZeros = displayData.hp1 == 0 && displayData.hp2 == 0 && 
-                       displayData.meter1 == 0 && displayData.meter2 == 0 &&
-                       displayData.x1 == 0 && displayData.y1 == 0;
-        
-        if (!gameActive || allZeros) {
-            sprintf_s(title, sizeof(title), "EFZ Training Mode - Waiting for match...");
-        } 
-        else {
-            sprintf_s(title, sizeof(title),
-                    "P1 (%s): %d HP, %d Meter, %.1f RF | P2 (%s): %d HP, %d Meter, %.1f RF | Frame: %d",
-                    displayData.p1CharName, displayData.hp1, displayData.meter1, displayData.rf1,
-                    displayData.p2CharName, displayData.hp2, displayData.meter2, displayData.rf2,
-                    frameCounter.load() / 3);
-        }
-    
-        // Append game mode information to the title, regardless of game state
-        uint8_t rawValue;
-        GameMode currentMode = GetCurrentGameMode(&rawValue); // Get both enum and raw value
-        std::string modeName = GetGameModeName(currentMode);
-        
-        char modeBuffer[100];
-        sprintf_s(modeBuffer, sizeof(modeBuffer), " | Mode: %s (%d)", modeName.c_str(), rawValue);
-        strcat_s(title, sizeof(title), modeBuffer);
-        
-        // Only update title if it changed
+        const std::string p1Name = snap.p1CharId >= 0
+            ? CharacterSettings::GetCharacterName(snap.p1CharId) : "?";
+        const std::string p2Name = snap.p2CharId >= 0
+            ? CharacterSettings::GetCharacterName(snap.p2CharId) : "?";
+        char title[512];
+        sprintf_s(title, sizeof(title),
+            "P1 (%s): %d HP, %d Meter, %.1f RF | P2 (%s): %d HP, %d Meter, %.1f RF | Frame: %u | Mode: Practice",
+            p1Name.c_str(), snap.p1Hp, snap.p1Meter, snap.p1RF,
+            p2Name.c_str(), snap.p2Hp, snap.p2Meter, snap.p2RF,
+            GetDisplayedFrameCounter() / 3u);
         if (lastTitle != title) {
             SetConsoleTitleA(title);
             lastTitle = title;
-            sleepMs = minSleepMs;
+            sleepMs = 100;
             stableIters = 0;
-        } else {
-            // Back off when no changes
-            stableIters++;
-            if (stableIters > 2) sleepMs = maxSleepMs;
+        } else if (++stableIters > 2) {
+            sleepMs = 250;
         }
-        
-    Sleep(sleepMs);
+        Sleep(sleepMs);
     }
 }
-
 void FlushPendingConsoleLogs() {
     std::lock_guard<std::mutex> lock(g_logMutex);
     if (g_consoleReady.load() && GetConsoleWindow() != nullptr) {

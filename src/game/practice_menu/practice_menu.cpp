@@ -14,6 +14,7 @@
 #include "../../../include/game/character_hotswap.h"
 #include "../../../include/game/practice_menu/mission_title_screen.h"
 #include "../../../include/gui/overlay.h"
+#include "runtime/practice_frontend_case.h"
 
 #include <algorithm>
 #include <string>
@@ -29,7 +30,7 @@
 //
 // Two interception points, neither of which touches the title menu count,
 // geometry, jump table, or vtable (so InGameNetplay is unaffected):
-//   1) A 5-byte jmp patch on the Practice CASE (0x776352). When the player
+//   1) A 7-byte whole-instruction jmp patch on the Practice CASE (0x776352). When the player
 //      confirms Practice, execution reaches this jump-table target; we jmp to a
 //      naked thunk that enters our submenu and returns 0 (stay on title) via the
 //      confirm-switch epilogue - BEFORE the game's blocking fade-out runs.
@@ -63,13 +64,8 @@ uint32_t g_lastScreenContext = 0;
 constexpr float kAnimStep     = 0.16f; // ~6-7 frames edge-to-edge
 constexpr int   kSlideDistPx  = 200;   // start off the right edge
 
+uintptr_t g_updateHookTarget = 0;
 TitleUpdateFn g_origUpdate = nullptr;      // MinHook trampoline
-uintptr_t     g_titleEpilogueAddr = 0;     // resolved 0x776483, read by the naked thunk
-
-// Practice-case jmp patch bookkeeping.
-uintptr_t g_practiceCaseAddr = 0;
-uint8_t   g_practiceCaseOriginal[5] = {0};
-bool      g_practiceCasePatched = false;
 
 // Per-frame input edge tracking (our own latch; format-agnostic).
 struct InputState { int horiz = 0; int vert = 0; bool confirm = false; bool cancel = false; };
@@ -446,21 +442,6 @@ extern "C" void __cdecl PracticeMenu_EnterFromCase(uint32_t screenContext) {
 
 namespace {
 
-// Naked thunk mirroring InGameNetplay's NetplayCaseThunk: read the screenContext
-// local ([ebp-8] within updateTitleScreenLogic's frame), enter the submenu, then
-// return 0 through the confirm-switch epilogue so no fade/mode-change happens.
-__declspec(naked) void PracticeCaseThunk() {
-    __asm {
-        mov eax, dword ptr [ebp-8]
-        push eax
-        call PracticeMenu_EnterFromCase
-        add esp, 4
-        mov al, 0
-        mov edx, dword ptr [g_titleEpilogueAddr]
-        jmp edx
-    }
-}
-
 // ---- input ----------------------------------------------------------------
 InputState ReadInput(uint32_t gc) {
     InputState s;
@@ -639,7 +620,7 @@ void ConsumeReopenRequest(uint32_t sc) {
 }
 
 // ---- update detour --------------------------------------------------------
-char __fastcall UpdateDetour(uint32_t sc, void* /*edx*/) {
+char UpdateDetourBody(uint32_t sc) {
     int phase = g_phase.load();
     if (phase == PHASE_INACTIVE) {
         ConsumeReopenRequest(sc);
@@ -775,6 +756,12 @@ char __fastcall UpdateDetour(uint32_t sc, void* /*edx*/) {
     return 0;
 }
 
+char __fastcall UpdateDetour(uint32_t sc, void* /*edx*/) {
+    auto execution=MinHookUtils::EnterExecution(MinHookUtils::TicketFor<&UpdateDetour>());
+    if (!execution.Admitted()) return g_origUpdate ? g_origUpdate(sc) : 0;
+    return UpdateDetourBody(sc);
+}
+
 // ---- install helpers ------------------------------------------------------
 bool VerifyVanillaTitle() {
     const uintptr_t updateVa = Resolve(kVaUpdateTitle);
@@ -786,36 +773,13 @@ bool VerifyVanillaTitle() {
 }
 
 bool PatchPracticeCase() {
-    g_practiceCaseAddr = Resolve(kVaCasePractice);
-    if (!g_practiceCaseAddr) return false;
-    if (!SafeReadMemory(g_practiceCaseAddr, g_practiceCaseOriginal, sizeof(g_practiceCaseOriginal))) return false;
-
-    uint8_t patch[5];
-    patch[0] = 0xE9; // jmp rel32
-    const int32_t rel = static_cast<int32_t>(
-        reinterpret_cast<uintptr_t>(&PracticeCaseThunk) - (g_practiceCaseAddr + 5));
-    std::memcpy(&patch[1], &rel, sizeof(rel));
-
-    DWORD oldProtect = 0;
-    if (!VirtualProtect(reinterpret_cast<void*>(g_practiceCaseAddr), sizeof(patch), PAGE_EXECUTE_READWRITE, &oldProtect))
-        return false;
-    std::memcpy(reinterpret_cast<void*>(g_practiceCaseAddr), patch, sizeof(patch));
-    VirtualProtect(reinterpret_cast<void*>(g_practiceCaseAddr), sizeof(patch), oldProtect, &oldProtect);
-    FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(g_practiceCaseAddr), sizeof(patch));
-    g_practiceCasePatched = true;
-    return true;
+    return Practice::InstallTitleCaseAdapter(&PracticeMenu_EnterFromCase);
 }
 
 void UnpatchPracticeCase() {
-    if (!g_practiceCasePatched || !g_practiceCaseAddr) return;
-    DWORD oldProtect = 0;
-    if (VirtualProtect(reinterpret_cast<void*>(g_practiceCaseAddr), sizeof(g_practiceCaseOriginal),
-                       PAGE_EXECUTE_READWRITE, &oldProtect)) {
-        std::memcpy(reinterpret_cast<void*>(g_practiceCaseAddr), g_practiceCaseOriginal, sizeof(g_practiceCaseOriginal));
-        VirtualProtect(reinterpret_cast<void*>(g_practiceCaseAddr), sizeof(g_practiceCaseOriginal), oldProtect, &oldProtect);
-        FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(g_practiceCaseAddr), sizeof(g_practiceCaseOriginal));
-    }
-    g_practiceCasePatched = false;
+    // Physical restoration belongs to the native owner continuation. Retain
+    // code, the accepted bypass and resources until the registry drains it.
+    Practice::CloseTitleCaseAdmission();
 }
 
 } // namespace
@@ -825,19 +789,18 @@ namespace PracticeMenu {
 bool Install() {
     if (g_installed.load()) return true;
 
-    if (!VerifyVanillaTitle()) {
+    if (!MinHookUtils::HasOwnedTarget(reinterpret_cast<void*>(g_updateHookTarget)) && !VerifyVanillaTitle()) {
         Log("Vanilla title code not recognized; skipping (Practice stays vanilla)");
         return false;
     }
 
-    g_titleEpilogueAddr = Resolve(kVaTitleEpilogue);
-    if (!g_titleEpilogueAddr) { Log("Failed to resolve title epilogue"); return false; }
-
     const uintptr_t updateVa = Resolve(kVaUpdateTitle);
+    if (g_updateHookTarget!=updateVa && MinHookUtils::HasOwnedTarget(reinterpret_cast<void*>(g_updateHookTarget))) return false;
+    g_updateHookTarget=updateVa;
     if (!MinHookUtils::CreateAndEnableHook(reinterpret_cast<void*>(updateVa),
                                            reinterpret_cast<void*>(&UpdateDetour),
                                            reinterpret_cast<void**>(&g_origUpdate),
-                                           "PracticeMenu", "updateTitleScreenLogic")) {
+                                           "PracticeMenu", "updateTitleScreenLogic", nullptr, nullptr, &MinHookUtils::TicketFor<&UpdateDetour>())) {
         Log("Failed to hook updateTitleScreenLogic");
         return false;
     }
@@ -845,7 +808,7 @@ bool Install() {
     if (!PatchPracticeCase()) {
         Log("Failed to patch Practice case; rolling back update hook");
         MinHookUtils::RemoveHook(reinterpret_cast<void*>(updateVa), "PracticeMenu", "updateTitleScreenLogic");
-        g_origUpdate = nullptr;
+        (void)PracticeHooks::ReleaseRetiredOriginal(MinHookUtils::OwnedHooks(), g_updateHookTarget, g_origUpdate);
         return false;
     }
 
@@ -859,17 +822,24 @@ bool Install() {
 }
 
 void Uninstall() {
-    if (!g_installed.load()) return;
+    if (!g_installed.load() && !MinHookUtils::HasOwnedTarget(reinterpret_cast<void*>(g_updateHookTarget)) &&
+        !Practice::TitleCaseRetained()) return;
     g_phase.store(PHASE_INACTIVE);
     Mission::Engine::CancelPendingMissionLoad("Practice menu uninstall");
     CharacterHotswap::CancelDirectPracticeLoad("Practice menu uninstall");
     CharacterHotswap::UninstallDirectPracticeBootstrap();
     UnpatchPracticeCase();
-    const uintptr_t updateVa = Resolve(kVaUpdateTitle);
+    const uintptr_t updateVa = g_updateHookTarget;
     if (updateVa) MinHookUtils::RemoveHook(reinterpret_cast<void*>(updateVa), "PracticeMenu", "updateTitleScreenLogic");
-    g_origUpdate = nullptr;
-    if (g_lastScreenContext) Render::Release(g_lastScreenContext);
     g_installed.store(false);
+    g_pendingReopen.store(0);
+    if (Practice::TitleCaseRetained() ||
+        !PracticeHooks::ReleaseRetiredOriginal(MinHookUtils::OwnedHooks(), g_updateHookTarget, g_origUpdate)) {
+        Log("Admission closed; update hook and render resources retained until retirement");
+        return;
+    }
+    g_updateHookTarget=0;
+    if (g_lastScreenContext) Render::Release(g_lastScreenContext);
     Log("Uninstalled");
 }
 

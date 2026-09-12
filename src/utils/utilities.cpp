@@ -1,6 +1,8 @@
 #include "../include/utils/utilities.h"
 
 #include "../include/core/constants.h"
+#include "../include/runtime/practice_runtime.h"
+#include "../include/utils/xinput_shim.h"
 #include "../include/core/logger.h"
 #include "../include/core/memory.h"
 #include "../include/input/input_handler.h"
@@ -8,6 +10,7 @@
 #include "../include/input/framestep.h"
 #include "../include/game/frame_analysis.h"   
 #include "../include/game/frame_advantage.h"
+#include "../include/gui/framebar.h"
 #include "../include/game/combo_overlay.h"
 #include "../include/utils/config.h"
 #include "../include/gui/imgui_impl.h"
@@ -556,6 +559,103 @@ void ResetRuntimeSettingsToDisplayDefaults() {
 }
 }
 
+namespace {
+struct PracticeInputBaseline {
+    EfzTmEntryV1 world{};
+    bool captured = false;
+    bool adopted = false;
+    bool immediateRetired = false;
+    uint8_t engineControl[3]{};
+    uint32_t autoBlock = 0;
+    uint32_t aiControl[2]{};
+};
+PracticeInputBaseline practiceInputBaseline; // guarded by g_p2ControlMutex
+
+bool SameInputWorld(const EfzTmEntryV1& a, const EfzTmEntryV1& b) {
+    return a.id.providerIncarnation == b.id.providerIncarnation &&
+        a.id.practiceSession == b.id.practiceSession && a.nativeThreadId == b.nativeThreadId &&
+        a.efzBase == b.efzBase && a.revivalBase == b.revivalBase && a.profileId == b.profileId &&
+        a.gameSystem == b.gameSystem && a.practiceController == b.practiceController &&
+        a.battleContext == b.battleContext && a.player1 == b.player1 && a.player2 == b.player2;
+}
+}
+
+bool Practice::CapturePracticeInputBaseline(const EfzTmEntryV1& world) {
+    std::lock_guard<std::recursive_mutex> lock(g_p2ControlMutex);
+    if (world.size != sizeof(world) || world.abiVersion != EFZ_TM_LIFECYCLE_ABI ||
+        world.nativeThreadId != GetCurrentThreadId() || !world.id.providerIncarnation ||
+        !world.id.practiceSession || !world.gameSystem || !world.battleContext ||
+        !world.player1 || !world.player2) return false;
+    auto& baseline = practiceInputBaseline;
+    if (baseline.captured) {
+        if (!SameInputWorld(baseline.world, world)) return false;
+        if (!world.id.battleWorld || !world.id.timeline) return !baseline.adopted;
+        if (baseline.adopted) return baseline.world.id.battleWorld == world.id.battleWorld &&
+            baseline.world.id.timeline == world.id.timeline;
+        if (!Practice::LegacyMonitorStartupRequired() &&
+            (!ImmediateInput::BindPracticeWorld(world) || !BindBufferFreezeWorld(world) ||
+             !MacroController::BindPracticeWorld(world))) return false;
+        baseline.world = world;
+        baseline.adopted = true;
+        return true;
+    }
+    // Only first-render preparation captures data. Completed Attach can adopt
+    // this exact object tuple, but cannot manufacture a late pristine baseline.
+    if (world.id.battleWorld || world.id.timeline) return false;
+    PracticeInputBaseline captured;
+    captured.world = world;
+    if (!SafeReadMemory(world.gameSystem + GAMESTATE_OFF_ACTIVE_PLAYER,
+                        captured.engineControl, sizeof(captured.engineControl)) ||
+        !SafeReadMemory(world.gameSystem + 4936u,
+                        &captured.autoBlock, sizeof(captured.autoBlock)) ||
+        !SafeReadMemory(world.player1 + AI_CONTROL_FLAG_OFFSET, &captured.aiControl[0], sizeof(uint32_t)) ||
+        !SafeReadMemory(world.player2 + AI_CONTROL_FLAG_OFFSET, &captured.aiControl[1], sizeof(uint32_t))) return false;
+    captured.captured = true;
+    baseline = captured;
+    return true;
+}
+
+void Practice::CancelPracticeInputWork() {
+    ImmediateInput::CancelWork();
+    CancelBufferFreezeWork();
+    MacroController::CancelPracticeWork();
+}
+
+uint32_t Practice::RetirePracticeInput(const EfzTmEntryV1& world, bool oldWorldHeld) {
+    std::lock_guard<std::recursive_mutex> lock(g_p2ControlMutex);
+    auto& baseline = practiceInputBaseline;
+    if (!oldWorldHeld || world.nativeThreadId != GetCurrentThreadId()) return EFZ_TM_FAULTED;
+    if (!baseline.adopted || !SameInputWorld(baseline.world, world) ||
+        baseline.world.id.battleWorld != world.id.battleWorld ||
+        baseline.world.id.timeline != world.id.timeline) return EFZ_TM_STALE;
+    if (!baseline.immediateRetired) {
+        if (!ImmediateInput::RetireWorker(world)) return EFZ_TM_PENDING;
+        baseline.immediateRetired = true;
+    }
+    const uint32_t bufferRetired = RetireBufferFreezeWorld(world);
+    if (bufferRetired != EFZ_TM_READY) return bufferRetired;
+    const uint32_t motionRetired = RetireNativeInputOwners(world);
+    if (motionRetired != EFZ_TM_READY) return motionRetired;
+    const uint32_t macroRetired = MacroController::RetirePracticeWorld(world);
+    if (macroRetired != EFZ_TM_READY) return macroRetired;
+    const uint32_t controllersRetired = RetireAutoActionControllers(world);
+    if (controllersRetired != EFZ_TM_READY) return controllersRetired;
+    // The capture is now concrete. Each producer still has to return its
+    // attributed mutation record before any baseline is written or forgotten.
+    // Stop()/DisableFeatures() are not a substitute: they resolve current data.
+    return EFZ_TM_PENDING;
+}
+
+void Practice::ResetPracticeMeasurements(const EfzTmIdentityV1&, ResetReason) {
+    // Runtime validates the identity and drains its consumers before this call.
+    // These resets discard measurement history, never scheduling identity or
+    // the user's stored macro clips and desired feature settings.
+    ResetFrameAdvantageTimeline();
+    FrameBar::ResetTimeline();
+    MacroController::ResetTimeline();
+    ResetFrameMonitorTimeline();
+}
+
 void ResetPracticeMatchSessionState(const char* reason) {
     // Invalidate destination proof before any asynchronous consumer can observe
     // the reset in progress. The lifecycle generation below is a second guard.
@@ -678,6 +778,8 @@ void EnableFeatures() {
 }
 
 void DisableFeatures() {
+    XInputShim::SetPollingActive(false);
+    keyMonitorRunning.store(false, std::memory_order_release);
     if (!g_featuresEnabled.load())
         return;
     
@@ -2115,9 +2217,14 @@ void SetConsoleVisibility(bool visible) {
 }
 
 void ResetFrameCounter() {
-    frameCounter = 0;
-    startFrameCount = 0;
+    // Reset the visible counter without invalidating live scheduling deadlines.
+    startFrameCount.store(frameCounter.load());
     LogOut("[SYSTEM] Frame counter reset", true);
+}
+
+unsigned int GetDisplayedFrameCounter() {
+    const auto origin = static_cast<unsigned int>(startFrameCount.load());
+    return static_cast<unsigned int>(frameCounter.load()) - origin;
 }
 
 // REVISED: This function now opens the ImGui menu to the Help tab.
@@ -2280,12 +2387,13 @@ void UpdateWindowActiveState() {
 
 // Separate function to manage key monitoring based on window focus
 void ManageKeyMonitoring() {
-    if (g_onlineModeActive.load()) { if (keyMonitorRunning.load()) keyMonitorRunning.store(false); return; }
+    const bool practiceBattle = g_featuresEnabled.load() && IsTrainingMenuContext();
+    XInputShim::SetPollingActive(practiceBattle);
     bool currentWindowActive = g_efzWindowActive.load();
     bool currentFeaturesEnabled = g_featuresEnabled.load();
     
     // Check if we should start key monitoring
-    bool shouldMonitorKeys = currentWindowActive && currentFeaturesEnabled;
+    bool shouldMonitorKeys = currentWindowActive && currentFeaturesEnabled && practiceBattle;
     bool isCurrentlyMonitoring = keyMonitorRunning.load();
     
     // Start key monitoring if we should be monitoring but aren't

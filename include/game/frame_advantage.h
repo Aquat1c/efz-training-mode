@@ -64,6 +64,9 @@ extern std::atomic<int> g_SkipRegularFAOverlayUntilFrame;
 
 // Function declarations
 void ResetFrameAdvantageState();
+// World/timeline boundary only, after prior measurement readers have drained.
+// Re-seeds the pause clock on its next sample without changing frameCounter.
+void ResetFrameAdvantageTimeline();
 // Clear only the on-screen frame advantage message/overlay
 void ClearFrameAdvantageDisplay();
 // Cancel any in-progress frame advantage exchange (used for teleport/reset)

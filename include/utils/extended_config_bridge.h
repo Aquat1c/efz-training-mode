@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <cstdint>
 
 namespace ExtendedConfigBridge {
 
@@ -16,12 +17,13 @@ struct Status {
     int version = 0;
     int audioRevision = 0;
     int controlsRevision = 0;
+    std::string audioCompatibilityError;
     std::string moduleName;
     std::string modulePath;
     std::string sharedConfigPath;
 };
 
-// Refreshes module/file discovery and reads the shared status if available.
+// Control plane only: reads the fixed location admitted during setup.
 bool Refresh(bool force = false);
 
 // Imports shared audio into the training-mode runtime config when the extension
@@ -31,8 +33,15 @@ bool ImportAudioSettingsIfAvailable(bool force = false);
 // Publishes training-mode audio slider changes into the extension-owned shared
 // config file. This never touches KEY.ini.
 bool PublishAudioSettings(int bgmPercent, int sePercent);
+// Single-lane edit captures the other lane once inside the file/control transaction.
+bool PublishAudioLaneSetting(bool bgm, int percent);
 
-const Status& GetStatus();
+bool InitializeAudioControl();
+void SignalAudioControlStop();
+void StopAudioControl();
+bool RequestTrainingGainOwnership(uint32_t lanes, int bgmPercent, int sePercent);
+Status GetStatus();
+bool IsSharedAudioActiveCached();
 bool IsSharedAudioActive();
 
 } // namespace ExtendedConfigBridge
