@@ -3,11 +3,26 @@
 #include <string>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
+#include "../runtime/practice_contract.h"
+
+namespace Practice {
+enum class ResetReason : uint32_t {
+    BeginWorld, NativeRestoreSucceeded, ExplicitPracticeReset,
+    RetireWorld, LeavePractice
+};
+// Called by the lifecycle owner after measurement and input work has drained.
+void ResetPracticeMeasurements(const EfzTmIdentityV1& identity, ResetReason reason);
+bool CapturePracticeInputBaseline(const EfzTmEntryV1& world);
+void CancelPracticeInputWork();
+uint32_t RetirePracticeInput(const EfzTmEntryV1& world, bool oldWorldHeld);
+}
 
 // Global state variables
 extern std::atomic<bool> menuOpen;
 extern std::atomic<int> frameCounter;
 extern std::atomic<bool> detailedLogging;
+extern std::atomic<bool> g_deepFrameAdvDebug;
 extern std::atomic<bool> autoAirtechEnabled;  // New: Controls auto-airtech feature
 extern std::atomic<int> autoAirtechDirection; // New: 0=forward, 1=backward
 extern std::atomic<bool> autoJumpEnabled;     // Controls auto-jump feature
@@ -22,7 +37,9 @@ extern std::atomic<bool> g_featuresEnabled;   // NEW: Master switch for all feat
 extern std::atomic<bool> autoActionEnabled;
 extern std::atomic<int> autoActionType;
 extern std::atomic<int> autoActionCustomID;
-extern std::atomic<int> autoActionPlayer;  // 1=P1, 2=P2, 3=Both
+extern std::atomic<int> autoActionPlayer;  // Cached dummy slot (1 or 2) = SwitchPlayers::GetRemotePlayerIndex().
+                                           // Write-only outside the tutorial lease: the engine re-resolves the
+                                           // target every tick. 3 (Both) is never produced.
 
 // Individual trigger settings - ADD THESE MISSING DECLARATIONS
 extern std::atomic<bool> triggerAfterBlockEnabled;
@@ -31,6 +48,8 @@ extern std::atomic<bool> triggerAfterHitstunEnabled;
 extern std::atomic<bool> triggerAfterAirtechEnabled;
 // New: On Recoil Guard trigger
 extern std::atomic<bool> triggerOnRGEnabled;
+// Global: when ON, each trigger attempt has a 50% chance to fire
+extern std::atomic<bool> triggerRandomizeEnabled;
 
 // Delay settings (in visual frames) - ADD THESE MISSING DECLARATIONS
 extern std::atomic<int> triggerAfterBlockDelay;
@@ -42,7 +61,24 @@ extern std::atomic<int> triggerOnRGDelay;
 
 // Function declarations
 uintptr_t GetEFZBase();
+// Invalidate cached EFZ base address (use if module could reload)
+void InvalidateEFZBaseCache();
+
+// Cached game state pointer (stable after initial allocation)
+uintptr_t GetGameStatePtr();
+void InvalidateGameStatePtrCache();
+uint32_t GetRuntimeLifecycleGeneration();
+void RequestRuntimeLifecycleResync(const std::string& reason);
+void ConsumeRuntimeLifecycleResyncRequests();
+void LifecycleWatcherThread();
+
+// Cached player base pointers (reinitialized on each character load).
+// Returns 0 if characters not initialized or screen not in battle.
+uintptr_t GetPlayerBase(int playerIndex); // playerIndex: 1 or 2
+void InvalidatePlayerBaseCache();
 bool IsActionable(short moveID);
+// Wakeup-specific actionable check: treat CROUCH_TO_STAND_ID (7) as non-actionable for wake triggers
+// to ensure execution occurs on the true neutral frame (e.g., 96 -> 7 -> 0 sequences).
 bool IsBlockstun(short moveID);
 bool IsRecoilGuard(short moveID);
 bool IsEFZWindowActive();
@@ -51,6 +87,7 @@ void CreateDebugConsole();
 void DestroyDebugConsole(); // NEW: Free console and redirect handles
 void SetConsoleVisibility(bool visible); // NEW: Show/Hide console window
 void ResetFrameCounter();
+unsigned int GetDisplayedFrameCounter();
 void ShowHotkeyInfo();
 std::string FormatPosition(double x, double y);
 bool IsHitstun(short moveID);
@@ -59,6 +96,7 @@ bool IsAirtech(short moveID);
 bool IsGroundtech(short moveID);
 bool IsFrozen(short moveID);
 bool IsSpecialStun(short moveID);
+bool IsThrown(short moveID);
 
 // Explicitly clear all auto-action triggers (and auto-action) persistently.
 // Use when returning to Character Select so user can re-enable manually later.
@@ -70,16 +108,18 @@ bool IsBlockstunState(short moveID);  // From frame_analysis.cpp
 
 short GetUntechValue(uintptr_t base, int player);
 void WriteStartupLog(const std::string& message); // Logs messages during the startup phase
+void SetStartupLogEnabled(bool enabled);          // Enable/disable startup log (call after config loads)
 std::string GetKeyName(int virtualKey);
 void DetectKeyBindings();
 bool IsDashState(short moveID); // New: Check if in dash state
-bool CanAirtech(short moveID); // Add this missing declaration
+bool CanAirtech(short moveID); 
 
 // NEW: Add feature management functions
 extern std::atomic<bool> g_featuresEnabled;
 void EnableFeatures();
 void DisableFeatures();
 void ResetDisplayDataToDefaults();
+void ResetPracticeMatchSessionState(const char* reason);
 
 // Add delay support for auto-airtech
 extern std::atomic<int> autoAirtechDelay; // 0=instant, 1+=frames to wait
@@ -88,6 +128,25 @@ extern std::atomic<int> autoAirtechDelay; // 0=instant, 1+=frames to wait
 extern std::atomic<bool> g_injectImmediateOnly[3]; // Index 0 unused, 1=P1, 2=P2
 
 // Display data structure
+// Max number of per-trigger option rows for randomized selection
+#ifndef MAX_TRIGGER_OPTIONS
+#define MAX_TRIGGER_OPTIONS 8
+#endif
+
+#ifndef MAX_ACTION_POOL_OPTIONS
+#define MAX_ACTION_POOL_OPTIONS 128
+#endif
+
+// A single row entry for a trigger: action choice with its own strength/button, delay and optional macro/custom
+struct TriggerOption {
+    bool enabled;     // whether this row participates in random selection
+    int  action;      // ACTION_* enum
+    int  strength;    // A/B/C or direction index for Jump; 0..2
+    int  delay;       // visual frames (0 = immediate)
+    int  customId;    // for custom actions (if used)
+    int  macroSlot;   // 0=None, 1..MaxSlots
+    int  chargeFollowup; // 0=Off, 1=IC after contact, 2=FIC before contact
+};
 struct DisplayData {
     int hp1, hp2;
     int meter1, meter2;
@@ -118,11 +177,14 @@ struct DisplayData {
     int p1IkumiLevelGauge; // 0..99 (100 triggers level up)
     int p2IkumiLevelGauge;
     bool infiniteBloodMode;  // Enables freeze patch for blood
-    
+
+    // Shiori (reuses Ikumi's per-character resource slot, player + 0x314C)
+    bool infiniteShioriShield;  // Freezes Shiori's shield gauge so it never depletes
+
     // Misuzu
     int p1MisuzuFeathers;
     int p2MisuzuFeathers;
-    bool infiniteFeatherMode; // Add this missing field
+    bool infiniteFeatherMode;
     // Misuzu poison
     int  p1MisuzuPoisonTimer; // 0..3000
     int  p2MisuzuPoisonTimer; // 0..3000
@@ -158,6 +220,8 @@ struct DisplayData {
     bool triggerAfterHitstun;
     bool triggerAfterAirtech;
     bool triggerOnRG; // new
+    // Global randomization for triggers (coin flip per attempt)
+    bool randomizeTriggers;
     
     // Delay settings
     int delayAfterBlock;
@@ -187,6 +251,13 @@ struct DisplayData {
     int strengthAfterAirtech;
     int strengthOnRG;
 
+    // Optional native 22C follow-up for the selected attack.
+    int chargeAfterBlock;
+    int chargeOnWakeup;
+    int chargeAfterHitstun;
+    int chargeAfterAirtech;
+    int chargeOnRG;
+
     // Per-trigger macro selection (0=None, 1..MaxSlots)
     int macroSlotAfterBlock;
     int macroSlotOnWakeup;
@@ -197,6 +268,28 @@ struct DisplayData {
     // Doppel Nanase (ExNanase) - Enlightened FM checkbox state per player
     bool p1DoppelEnlightened;
     bool p2DoppelEnlightened;
+
+    // Doppel Nanase (ExNanase) - how the OPPONENT escapes her command-throw
+    // follow-ups. The row lives on Doppel's side because the field driven by it
+    // sits on Doppel's own struct, but the behaviour described is the opponent's.
+    // Mode:  0=OFF, 1=NEVER, 2=TECH B, 3=TECH C, 4=ALWAYS, 5=RANDOM
+    int p1DoppelTechMode;
+    int p2DoppelTechMode;
+    // Stage: 0=ALL, 1=STAGE 1, 2=STAGE 2, 3=STAGE 3
+    int p1DoppelTechStage;
+    int p2DoppelTechStage;
+
+    // Sayuri Kurata - the move she remembers countering, and whether Magical
+    // Cutter is always available out of a grounded block.
+    // Memory choice: 0=OFF, 1=NOTHING, 2=LAST BLOCKED, 3+ = one move of the
+    // CURRENT opponent. The index is presentation only - the resolved move ID
+    // lives in the SayuriCounter module, because the list is rebuilt per
+    // opponent and the same index means a different move against the next one.
+    int p1SayuriMemoryChoice;
+    int p2SayuriMemoryChoice;
+    // Cutter: 0=NORMAL, 1=ALWAYS READY
+    int p1SayuriCutterMode;
+    int p2SayuriCutterMode;
 
     // Nanase (Rumi) – Barehanded mode (full swap of normals+specials)
     bool p1RumiBarehanded;
@@ -230,6 +323,8 @@ struct DisplayData {
     // Neyuki (Sleepy Nayuki) – Jam count (0..9)
     int  p1NeyukiJamCount;
     int  p2NeyukiJamCount;
+    bool p1NeyukiLockJam;  // when true, restore jam count on wakeup/neutral recovery
+    bool p2NeyukiLockJam;
 
     // Mio – stance control (0=Short,1=Long) and optional lock
     int  p1MioStance;      // cached current stance
@@ -353,9 +448,68 @@ struct DisplayData {
     int   p2RecoveryRfMode;
     double p2RecoveryRfCustom;
     bool  p2RecoveryRfForceBlueIC;
+
+    // Legacy multi-action pools per trigger. Bitmask mapping follows the old
+    // grouped motion index space used by the UI (0..23). Kept so older runtime
+    // state can be imported into the concrete pools below.
+    uint32_t afterBlockActionPoolMask;
+    uint32_t onWakeupActionPoolMask;
+    uint32_t afterHitstunActionPoolMask;
+    uint32_t afterAirtechActionPoolMask;
+    uint32_t onRGActionPoolMask;
+
+    // Concrete multi-action pools per trigger. Low/high form a 128-bit mask
+    // over explicit action+variant entries: 623A and 623B are separate bits,
+    // normals use their concrete ACTION_* ids, and jumps store direction.
+    uint64_t afterBlockActionPoolMaskLo;
+    uint64_t afterBlockActionPoolMaskHi;
+    uint64_t onWakeupActionPoolMaskLo;
+    uint64_t onWakeupActionPoolMaskHi;
+    uint64_t afterHitstunActionPoolMaskLo;
+    uint64_t afterHitstunActionPoolMaskHi;
+    uint64_t afterAirtechActionPoolMaskLo;
+    uint64_t afterAirtechActionPoolMaskHi;
+    uint64_t onRGActionPoolMaskLo;
+    uint64_t onRGActionPoolMaskHi;
+
+    // Per concrete pool action delays. -1 means inherit the trigger's normal delay.
+    int afterBlockActionPoolDelays[MAX_ACTION_POOL_OPTIONS];
+    int onWakeupActionPoolDelays[MAX_ACTION_POOL_OPTIONS];
+    int afterHitstunActionPoolDelays[MAX_ACTION_POOL_OPTIONS];
+    int afterAirtechActionPoolDelays[MAX_ACTION_POOL_OPTIONS];
+    int onRGActionPoolDelays[MAX_ACTION_POOL_OPTIONS];
+
+    // Per concrete pool action charge mode (0=Off, 1=IC, 2=FIC).
+    int afterBlockActionPoolCharges[MAX_ACTION_POOL_OPTIONS];
+    int onWakeupActionPoolCharges[MAX_ACTION_POOL_OPTIONS];
+    int afterHitstunActionPoolCharges[MAX_ACTION_POOL_OPTIONS];
+    int afterAirtechActionPoolCharges[MAX_ACTION_POOL_OPTIONS];
+    int onRGActionPoolCharges[MAX_ACTION_POOL_OPTIONS];
+
+    bool     afterBlockUseActionPool;
+    bool     onWakeupUseActionPool;
+    bool     afterHitstunUseActionPool;
+    bool     afterAirtechUseActionPool;
+    bool     onRGUseActionPool;
+
+    // Per-trigger multi-row options (randomly pick one on trigger fire)
+    int           afterBlockOptionCount;
+    TriggerOption afterBlockOptions[MAX_TRIGGER_OPTIONS];
+    int           onWakeupOptionCount;
+    TriggerOption onWakeupOptions[MAX_TRIGGER_OPTIONS];
+    int           afterHitstunOptionCount;
+    TriggerOption afterHitstunOptions[MAX_TRIGGER_OPTIONS];
+    int           afterAirtechOptionCount;
+    TriggerOption afterAirtechOptions[MAX_TRIGGER_OPTIONS];
+    int           onRGOptionCount;
+    TriggerOption onRGOptions[MAX_TRIGGER_OPTIONS];
 };
 
 extern DisplayData displayData;
+
+bool HasAnyAutoActionTriggerEnabled();
+bool HasAnyAutoActionTriggerEnabled(const DisplayData& data);
+int ResolveAutoActionTargetPlayer();
 
 // Structure to hold detected key bindings
 struct KeyBindings {
@@ -390,6 +544,63 @@ extern std::atomic<int> triggerAfterHitstunAction;
 extern std::atomic<int> triggerAfterAirtechAction;
 extern std::atomic<int> triggerOnRGAction;
 
+extern std::atomic<int> triggerAfterBlockCharge;
+extern std::atomic<int> triggerOnWakeupCharge;
+extern std::atomic<int> triggerAfterHitstunCharge;
+extern std::atomic<int> triggerAfterAirtechCharge;
+extern std::atomic<int> triggerOnRGCharge;
+
+// Legacy per-trigger multi-action pool configuration.
+// Bitmask uses old UI motion indices (0..23). Runtime imports these only when
+// the concrete pool mask below is empty.
+extern std::atomic<uint32_t> triggerAfterBlockActionPoolMask;
+extern std::atomic<uint32_t> triggerOnWakeupActionPoolMask;
+extern std::atomic<uint32_t> triggerAfterHitstunActionPoolMask;
+extern std::atomic<uint32_t> triggerAfterAirtechActionPoolMask;
+extern std::atomic<uint32_t> triggerOnRGActionPoolMask;
+
+// Concrete per-trigger multi-action pool configuration.
+extern std::atomic<uint64_t> triggerAfterBlockActionPoolMaskLo;
+extern std::atomic<uint64_t> triggerAfterBlockActionPoolMaskHi;
+extern std::atomic<uint64_t> triggerOnWakeupActionPoolMaskLo;
+extern std::atomic<uint64_t> triggerOnWakeupActionPoolMaskHi;
+extern std::atomic<uint64_t> triggerAfterHitstunActionPoolMaskLo;
+extern std::atomic<uint64_t> triggerAfterHitstunActionPoolMaskHi;
+extern std::atomic<uint64_t> triggerAfterAirtechActionPoolMaskLo;
+extern std::atomic<uint64_t> triggerAfterAirtechActionPoolMaskHi;
+extern std::atomic<uint64_t> triggerOnRGActionPoolMaskLo;
+extern std::atomic<uint64_t> triggerOnRGActionPoolMaskHi;
+
+extern int g_afterBlockActionPoolDelays[MAX_ACTION_POOL_OPTIONS];
+extern int g_onWakeupActionPoolDelays[MAX_ACTION_POOL_OPTIONS];
+extern int g_afterHitstunActionPoolDelays[MAX_ACTION_POOL_OPTIONS];
+extern int g_afterAirtechActionPoolDelays[MAX_ACTION_POOL_OPTIONS];
+extern int g_onRGActionPoolDelays[MAX_ACTION_POOL_OPTIONS];
+
+extern int g_afterBlockActionPoolCharges[MAX_ACTION_POOL_OPTIONS];
+extern int g_onWakeupActionPoolCharges[MAX_ACTION_POOL_OPTIONS];
+extern int g_afterHitstunActionPoolCharges[MAX_ACTION_POOL_OPTIONS];
+extern int g_afterAirtechActionPoolCharges[MAX_ACTION_POOL_OPTIONS];
+extern int g_onRGActionPoolCharges[MAX_ACTION_POOL_OPTIONS];
+
+extern std::atomic<bool>     triggerAfterBlockUsePool;
+extern std::atomic<bool>     triggerOnWakeupUsePool;
+extern std::atomic<bool>     triggerAfterHitstunUsePool;
+extern std::atomic<bool>     triggerAfterAirtechUsePool;
+extern std::atomic<bool>     triggerOnRGUsePool;
+
+// Runtime copies of per-trigger option rows (populated on Apply)
+extern int           g_afterBlockOptionCount;
+extern TriggerOption g_afterBlockOptions[MAX_TRIGGER_OPTIONS];
+extern int           g_onWakeupOptionCount;
+extern TriggerOption g_onWakeupOptions[MAX_TRIGGER_OPTIONS];
+extern int           g_afterHitstunOptionCount;
+extern TriggerOption g_afterHitstunOptions[MAX_TRIGGER_OPTIONS];
+extern int           g_afterAirtechOptionCount;
+extern TriggerOption g_afterAirtechOptions[MAX_TRIGGER_OPTIONS];
+extern int           g_onRGOptionCount;
+extern TriggerOption g_onRGOptions[MAX_TRIGGER_OPTIONS];
+
 // Forward dash follow-up (0=None, 1=5A,2=5B,3=5C,4=2A,5=2B,6=2C)
 extern std::atomic<int> forwardDashFollowup;
 extern std::atomic<bool> forwardDashFollowupDashMode;
@@ -407,22 +618,29 @@ extern std::atomic<int> triggerOnRGCustomID;
 // Add these after the other global state variables
 extern std::atomic<bool> g_efzWindowActive;
 extern std::atomic<bool> g_guiActive;
-// Set when an online match is detected; used to terminate/pause mod threads
+// Reversible runtime suspend flag used to keep training systems passive during netplay.
 extern std::atomic<bool> g_onlineModeActive;
 
-// Enter online-safe mode: cooperatively stop mod threads, disable hooks/features
-void EnterOnlineMode();
+// Enter/exit reversible netplay suspension.
+void EnterNetplaySuspend();
+void ExitNetplaySuspend();
+void AuditNetplayMenuEntryState();
 
 // NEW: Add these for the debug tab's manual input override feature
 extern std::atomic<bool> g_manualInputOverride[3]; // Index 0 unused, 1 for P1, 2 for P2
 extern std::atomic<uint8_t> g_manualInputMask[3];
 extern std::atomic<bool> g_manualJumpHold[3]; // NEW: For continuous jump on hold
 
-// Add this function declaration
 void UpdateWindowActiveState();
 
 // Add these after the other global state variables
 extern std::atomic<bool> g_statsDisplayEnabled;
+// Debug-info overlay page (scrolled with 5/6 while the overlay is active). Below
+// the always-on core stats, an EXTRA-info area is paginated: page 0 = overview,
+// then one page per active entity/bullet. g_statsPageCount is published live by
+// UpdateStatsDisplay (dynamic with the entity count); the 5/6 handler wraps on it.
+extern std::atomic<int> g_statsPageIndex;
+extern std::atomic<int> g_statsPageCount;
 extern int g_statsP1ValuesId;
 extern int g_statsP2ValuesId;
 extern int g_statsPositionId;
@@ -441,6 +659,9 @@ extern int g_statsMaiId;
 extern int g_statsMinagiId;
 // New: AI control flags stats line id
 extern int g_statsAIFlagsId;
+// New: Blockstun/Hitstun counters line id
+extern int g_statsBlockstunId; // Blockstun (logical frames)
+extern int g_statsUntechId;    // Hitstun/Untech (logical frames)
 
 // Window and key monitoring management
 void ManageKeyMonitoring();
@@ -459,7 +680,9 @@ extern std::atomic<int> triggerAfterHitstunMacroSlot;
 extern std::atomic<int> triggerAfterAirtechMacroSlot;
 extern std::atomic<int> triggerOnRGMacroSlot;
 
-// Debug toggle: enable pre-buffering (freeze) of wakeup specials/supers/dashes
+// Pre-buffer Wakeup: start a 0F On-Wakeup MACRO early during state 96 so its first attack is
+// buffered; OFF plays it on the first actionable frame. Wake specials always early-buffer and
+// wake dashes never do, regardless of this flag.
 extern std::atomic<bool> g_wakeBufferingEnabled;
 
 // UI: Show/hide the on-screen Frame Advantage overlay (default OFF)

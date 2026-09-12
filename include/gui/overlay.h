@@ -30,6 +30,7 @@ struct OverlayMessage {
     bool isPermanent;  // If true, stays until explicitly removed
     int id;            // Unique ID for permanent messages
     std::string category; // NEW: Category for grouping messages
+    unsigned char backgroundAlpha; // Per-message background opacity
 };
 
 class DirectDrawHook {
@@ -84,7 +85,7 @@ public:
     
     // Add or update a permanent message
     static int AddPermanentMessage(const std::string& text, COLORREF color = RGB(255, 255, 0), 
-                                 int x = 10, int y = 10);
+                                 int x = 10, int y = 10, unsigned char backgroundAlpha = 180);
     
     // Update an existing permanent message
     static void UpdatePermanentMessage(int id, const std::string& newText, COLORREF newColor = RGB(255, 255, 0));
@@ -99,9 +100,9 @@ public:
     static void ClearAllMessages();
 
     // Make this function public so it can be called from the global EndScene hook
-    static void RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice);
+    static void RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice, UINT rtWidth = 0, UINT rtHeight = 0);
 
-    // Add this method - it's missing but called in dllmain.cpp
+
     static void Shutdown();
 
     // Set up window procedure hooks for ImGui input handling
@@ -109,6 +110,9 @@ public:
     
     // --- D3D9 Hooking for ImGui ---
     static bool InitializeD3D9();
+    static bool WasLastD3D9InitDeferredForNetplay();
+    static bool ShouldUseExternalMenuFallback();
+    static bool SetD3D9Active(bool active);
     static void ShutdownD3D9();
     // OBSOLETE: These functions are part of the old rendering model and should be removed.
     // static void RenderImGui();
@@ -128,6 +132,7 @@ extern int g_TriggerOnWakeupId;
 extern int g_TriggerAfterHitstunId;
 extern int g_TriggerAfterAirtechId;
 extern int g_TriggerOnRGId;
+extern int g_FramestepStatusId;
 
 // Debug overlay borders toggle (controlled from ImGui)
 extern std::atomic<bool> g_ShowOverlayDebugBorders;

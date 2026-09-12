@@ -5,17 +5,26 @@
 #include "../include/core/constants.h"
 #include "../include/core/memory.h"
 #include "../include/core/logger.h"
-#include "../include/gui/gui.h"
+#include "../include/gui/settings_apply.h"
 #include "../include/utils/config.h"
 #include "../include/gui/overlay.h"
+#include "../include/gui/framebar.h"
 #include "../include/game/character_settings.h"
+#include "../include/game/character_action_catalog.h"
+#include "../include/game/collision_display.h"
+#include "../include/game/combo_overlay.h"
 #include "../include/game/frame_monitor.h"
+#include "../include/game/per_frame_sample.h" // Unified per-frame sample (fix build: undefined PerFrameSample)
 #include "../include/input/input_motion.h"
 #include "../include/input/input_motion.h"
 #include "../include/utils/bgm_control.h"
+#include "../include/utils/xp_compat.h"
 #include "../include/input/input_debug.h"
-#include <algorithm> // Add this for std::max
+#include "../include/utils/xinput_shim.h"
+#include <algorithm> 
 #include <vector>
+#include <string>
+#include <sstream>
 // Removed <xinput.h> include: this translation unit no longer uses direct XInput
 // symbols (controller footer mappings were stripped). Keeping the include caused
 // stale compile diagnostics referencing XINPUT_* despite the code being removed.
@@ -33,12 +42,21 @@ extern void SpamAttackButton(uintptr_t playerBase, uint8_t button, int frames, c
 #include "../include/game/fm_commands.h"
 // Always RG control
 #include "../include/game/always_rg.h"
+// Random RG control
+#include "../include/game/random_rg.h"
+#include "../include/game/doppel_tech.h"
+#include "../include/game/sayuri_counter.h"
+// Random Block control
+#include "../include/game/random_block.h"
+#include "../include/game/auto_action.h" // g_p2ControlOverridden
 // Switch players
 #include "../include/utils/switch_players.h"
 #include "../include/game/macro_controller.h"
 #include "../include/utils/pause_integration.h"
 #include "../include/game/practice_offsets.h"
 #include "../include/core/version.h"
+#include "../include/utils/network.h"
+#include "../include/input/framestep.h"
 
 // Add these constants at the top of the file after includes
 // These are from input_motion.cpp but we need them here
@@ -50,45 +68,97 @@ extern void SpamAttackButton(uintptr_t playerBase, uint8_t button, int frames, c
 #define BUTTON_D    GAME_INPUT_D
 
 namespace ImGuiGui {
+    constexpr float kGameClientWidth = 640.0f;
+    constexpr float kGameClientHeight = 480.0f;
+
     // Define static variable at namespace level
     static bool s_randomInputActive = false;
+    // Track current RF Recovery (F4) UI selection across frames for Apply gating (0=Disabled,1=Full,2=Custom)
+    static int g_f4UiMode = 0;
+    static bool s_f4Blue = false;
+    static int s_f4RfAmount = 100;
+    static int s_f4ModeIdx = 0;
+    static bool s_uiFreezeP1 = false;
+    static bool s_uiFreezeP1ColorBlue = true;
+    static bool s_uiFreezeP2 = false;
+    static bool s_uiFreezeP2ColorBlue = true;
+    static bool s_requestInitialNavFocus = false;
 
-    // Action type mapping (same as in gui_auto_action.cpp)
+    static void ClampMainWindowToClientBounds() {
+        ImGuiViewport* viewport = ImGui::GetMainViewport();
+        if (!viewport) return;
+
+        ImVec2 pos = ImGui::GetWindowPos();
+        ImVec2 size = ImGui::GetWindowSize();
+
+        float minX = viewport->Pos.x;
+        float minY = viewport->Pos.y;
+        auto minf = [](float a, float b) { return (a < b) ? a : b; };
+        float boundsWidth = minf(kGameClientWidth, viewport->Size.x);
+        float boundsHeight = minf(kGameClientHeight, viewport->Size.y);
+
+        float maxX = minX + boundsWidth - size.x;
+        float maxY = minY + boundsHeight - size.y;
+        if (maxX < minX) maxX = minX;
+        if (maxY < minY) maxY = minY;
+
+        auto clamp = [](float value, float minV, float maxV) {
+            if (value < minV) return minV;
+            if (value > maxV) return maxV;
+            return value;
+        };
+
+        float clampedX = clamp(pos.x, minX, maxX);
+        float clampedY = clamp(pos.y, minY, maxY);
+        if (clampedX != pos.x || clampedY != pos.y) {
+            ImGui::SetWindowPos(ImVec2(clampedX, clampedY), ImGuiCond_Always);
+            ImGui::ResetMouseDragDelta(ImGuiMouseButton_Left);
+        }
+    }
+
+    // Action type mapping - GUI combo index to internal action type
+    // The combo index is what appears in the dropdown, action type is the internal value
     static const int ComboIndexToActionType[] = {
         ACTION_5A,          // 0 = 5A
         ACTION_5B,          // 1 = 5B
         ACTION_5C,          // 2 = 5C
-        ACTION_2A,          // 3 = 2A
-        ACTION_2B,          // 4 = 2B
-        ACTION_2C,          // 5 = 2C
-        ACTION_JA,          // 6 = j.A 
-        ACTION_JB,          // 7 = j.B
-        ACTION_JC,          // 8 = j.C
-        ACTION_QCF,         // 9 = 236 (QCF)
-        ACTION_DP,          // 10 = 623 (DP)
-        ACTION_QCB,         // 11 = 214 (QCB)
-        ACTION_421,         // 12 = 421 (Half-circle Down)
-        ACTION_SUPER1,      // 13 = 41236 (HCF)
-    ACTION_SUPER2,      // 14 = 214236 Hybrid (replaces removed 63214)
-    ACTION_236236,      // 15 = 236236 (Double QCF)
-    ACTION_214214,      // 16 = 214214 (Double QCB)
-    ACTION_JUMP,        // 17 = Jump
-    ACTION_BACKDASH,    // 18 = Backdash
-    ACTION_FORWARD_DASH,// 19 = Forward Dash
-    ACTION_BLOCK,       // 20 = Block
-    ACTION_FINAL_MEMORY,// 21 = Final Memory (per-character)
-    ACTION_641236,      // 22 = 641236 Super
-    ACTION_463214,      // 23 = 463214 Reverse Roll
-    ACTION_412,         // 24 = 412 Partial Roll
-    ACTION_22,          // 25 = 22 Down-Down
-    ACTION_4123641236,  // 26 = 4123641236 Double Roll
-    ACTION_6321463214   // 27 = 6321463214 Extended Pretzel
-    ,ACTION_6A          // 28 = 6A (Forward A)
-    ,ACTION_6B          // 29 = 6B
-    ,ACTION_6C          // 30 = 6C
-    ,ACTION_4A          // 31 = 4A (Back A)
-    ,ACTION_4B          // 32 = 4B
-    ,ACTION_4C          // 33 = 4C
+        ACTION_5D,          // 3 = 5D
+        ACTION_2A,          // 4 = 2A
+        ACTION_2B,          // 5 = 2B
+        ACTION_2C,          // 6 = 2C
+        ACTION_2D,          // 7 = 2D
+        ACTION_JA,          // 8 = j.A 
+        ACTION_JB,          // 9 = j.B
+        ACTION_JC,          // 10 = j.C
+        ACTION_JD,          // 11 = j.D
+        ACTION_6A,          // 12 = 6A (Forward A)
+        ACTION_6B,          // 13 = 6B
+        ACTION_6C,          // 14 = 6C
+        ACTION_6D,          // 15 = 6D
+        ACTION_4A,          // 16 = 4A (Back A)
+        ACTION_4B,          // 17 = 4B
+        ACTION_4C,          // 18 = 4C
+        ACTION_4D,          // 19 = 4D
+        ACTION_QCF,         // 20 = 236 (QCF)
+        ACTION_DP,          // 21 = 623 (DP)
+        ACTION_QCB,         // 22 = 214 (QCB)
+        ACTION_421,         // 23 = 421 (Half-circle Down)
+        ACTION_SUPER1,      // 24 = 41236 (HCF)
+        ACTION_SUPER2,      // 25 = legacy ID for 2141236
+        ACTION_236236,      // 26 = 236236 (Double QCF)
+        ACTION_214214,      // 27 = 214214 (Double QCB)
+        ACTION_641236,      // 28 = 641236 Super
+        ACTION_463214,      // 29 = 463214 Reverse Roll
+        ACTION_412,         // 30 = 412 Partial Roll
+        ACTION_22,          // 31 = 22 Down-Down
+        ACTION_4123641236,  // 32 = 4123641236 Double Roll
+        ACTION_6321463214,  // 33 = 6321463214 Extended Pretzel
+        ACTION_JUMP,        // 34 = Jump
+        ACTION_BACKDASH,    // 35 = Backdash
+        ACTION_FORWARD_DASH,// 36 = Forward Dash
+        ACTION_BLOCK,       // 37 = Block
+        ACTION_FINAL_MEMORY,// 38 = Final Memory (per-character)
+        ACTION_KAORI_RECOIL_DUCK // 39 = Kaori 44~66 staged recipe
     };
 
     // Helper function to convert action type to combo index
@@ -106,16 +176,55 @@ namespace ImGuiGui {
         false,  // visible
         0,      // currentTab
         -1,     // requestedTab
+        0,      // mainMenuSubTab (Opponent)
+        0,      // autoActionSubTab (Triggers)
+        0,      // helpSubTab (first help tab)
+        -1,     // requestedMainMenuSubTab
+        -1,     // requestedAutoActionSubTab
+        -1,     // requestedHelpSubTab
         {}      // localData (initialized with default values)
     };
 
     // Initialize the GUI
     void Initialize() {
-        // Copy current display data into our local copy
-        guiState.localData = displayData;
-        
-        // Only show in detailed mode
+        ResetForPracticeSession("Initialize");
         LogOut("[IMGUI_GUI] GUI state initialized", detailedLogging.load());
+    }
+
+    void RequestInitialNavFocus() {
+        s_requestInitialNavFocus = true;
+    }
+
+    void ResetForPracticeSession(const char* reason, bool resetTabs) {
+        guiState.localData = displayData;
+        if (resetTabs) {
+            guiState.currentTab = 0;
+            guiState.requestedTab = -1;
+            guiState.mainMenuSubTab = 0;
+            guiState.autoActionSubTab = 0;
+            guiState.helpSubTab = 0;
+            guiState.requestedMainMenuSubTab = -1;
+            guiState.requestedAutoActionSubTab = -1;
+            guiState.requestedHelpSubTab = -1;
+        }
+
+        s_randomInputActive = false;
+        g_f4UiMode = 0;
+        s_f4Blue = false;
+        s_f4RfAmount = 100;
+        s_f4ModeIdx = 0;
+        s_uiFreezeP1 = false;
+        s_uiFreezeP1ColorBlue = true;
+        s_uiFreezeP2 = false;
+        s_uiFreezeP2ColorBlue = true;
+
+        std::ostringstream oss;
+        oss << "[IMGUI][SESSION] Reset local state";
+        if (reason && *reason) {
+            oss << " reason=" << reason;
+        }
+        oss << " tabs=" << (resetTabs ? "1" : "0");
+        LogOut(oss.str(), true);
     }
 
     // Game Values Tab (reworked layout)
@@ -123,14 +232,25 @@ namespace ImGuiGui {
         ImGui::PushItemWidth(120);
 
         if (ImGui::BeginTabBar("##MainMenuSubTabs", ImGuiTabBarFlags_None)) {
+            // Apply any requested sub-tab selection once
+            int rq = guiState.requestedMainMenuSubTab; guiState.requestedMainMenuSubTab = -1;
             // Opponent sub-tab (Practice Dummy controls)
-            if (ImGui::BeginTabItem("Opponent")) {
+            ImGuiTabItemFlags _setOpp = (rq == 0) ? ImGuiTabItemFlags_SetSelected : 0;
+            if (ImGui::BeginTabItem("Opponent", nullptr, _setOpp)) {
+                guiState.mainMenuSubTab = 0;
                 // Control (requires Apply)
-                ImGui::Checkbox("Enable P2 Control (Practice Only)", &guiState.localData.p2ControlEnabled);
+                // When auto-actions temporarily override P2 control, disable this checkbox to avoid conflicts.
+                if (g_p2ControlOverridden) {
+                    ImGui::BeginDisabled(true);
+                    ImGui::Checkbox("Enable P2 Control (Practice Only)", &guiState.localData.p2ControlEnabled);
+                    ImGui::EndDisabled();
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Disabled: P2 control is temporarily overridden by Auto Actions.");
+                } else {
+                    ImGui::Checkbox("Enable P2 Control (Practice Only)", &guiState.localData.p2ControlEnabled);
+                }
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Let you play P2 in Practice.\nClick Apply to enable/disable.");
                 // Inform about default training hotkeys behavior while P2 control is enabled
                 if (guiState.localData.p2ControlEnabled) {
-                    ImGui::SameLine();
                     ImGui::TextDisabled("F6/F7 training keys won't work while this is ON");
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("While P2 Control is enabled, the game's F6 (stance) and F7 (auto-block) keys are ignored.");
                 }
@@ -141,26 +261,75 @@ namespace ImGuiGui {
                 if (GetCurrentGameMode() == GameMode::Practice) {
                     int abMode = GetDummyAutoBlockMode();
                     ImGui::SetNextItemWidth(200);
-                    if (ImGui::Combo("Dummy Auto-Block", &abMode, abNames, 4)) { SetDummyAutoBlockMode(abMode); }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("How the dummy blocks: Off / Block All / Block Only First Hit / Start Blocking After First Hit.");
+                    // Unlabeled combo; keep ID stable with a hidden label
+                    const bool randomBlockOwnsFlag = RandomBlock::IsEnabled();
+                    if (randomBlockOwnsFlag) ImGui::BeginDisabled(true);
+                    if (ImGui::Combo("##RandomBlockMode", &abMode, abNames, 4)) { SetDummyAutoBlockMode(abMode); }
+                    if (randomBlockOwnsFlag) ImGui::EndDisabled();
+                    if (ImGui::IsItemHovered(
+                            ImGuiHoveredFlags_AllowWhenDisabled)) {
+                        ImGui::SetTooltip(randomBlockOwnsFlag
+                        ? "This configured blocking window remains active under Random Block. Turn Random Block off to change it."
+                        : "How the dummy blocks: Off / Block All / Block Only First Hit / Start Blocking After First Hit.\nRandom Block flips a coin each frame when it's turned ON.");
+                    }
+                    // After the combo: Random Block and Adaptive Stance checkboxes
+                    bool randomBlock = RandomBlock::IsEnabled();
+                    if (ImGui::Checkbox("Random Block", &randomBlock)) {
+                        // Random Block toggles the game's autoblock flag per frame; avoid conflicts with RG modes
+                        bool alwaysRG = AlwaysRG::IsEnabled();
+                        bool randomRG = RandomRG::IsEnabled();
+                        // Randomizing an empty blocking window is a visible ON
+                        // state that can never do anything. Make the legacy UI
+                        // choose the ordinary ALL window, matching the custom
+                        // menu's valid-state constraint.
+                        if (randomBlock && abMode == DAB_None) {
+                            SetDummyAutoBlockMode(DAB_All);
+                            abMode = DAB_All;
+                        }
+                        if (randomBlock && alwaysRG) { AlwaysRG::SetEnabled(false); }
+                        if (randomBlock && randomRG) { RandomRG::SetEnabled(false); }
+                        RandomBlock::SetEnabled(randomBlock);
+                        LogOut(std::string("[IMGUI][RandomBlock] ") + (randomBlock ? "Enabled" : "Disabled"), true);
+                        if (g_ShowRGDebugToasts.load()) {
+                            DirectDrawHook::AddMessage(std::string("Random Block: ") + (randomBlock ? "ON" : "OFF"), "RANDOM_BLOCK", RGB(220,200,255), 1500, 12, 108);
+                        }
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Each frame flips a coin; fifty percent chance chance to set autoblock ON during the mode's ON window.");
                     ImGui::SameLine();
                     bool adaptive = GetAdaptiveStanceEnabled();
                     if (ImGui::Checkbox("Adaptive stance", &adaptive)) { SetAdaptiveStanceEnabled(adaptive); }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Auto pick high vs air attacks, low vs grounded attacks.");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Auto pick high vs overhead/air attacks, low vs grounded attacks.");
                 } else {
-                    ImGui::BeginDisabled(); int dummyAB = 0; ImGui::Combo("Dummy Auto-Block", &dummyAB, abNames, 4); ImGui::EndDisabled();
+                    ImGui::BeginDisabled(); int dummyAB = 0; ImGui::Combo("##RandomBlockMode", &dummyAB, abNames, 4); if (ImGui::IsItemHovered()) ImGui::SetTooltip("How the dummy blocks: Off / Block All / Block Only First Hit / Start Blocking After First Hit.\nRandom Block flips a coin each frame during the mode's ON window; OFF toggles are deferred while guarding."); ImGui::EndDisabled();
                 }
 
                 // RG aids
                 bool alwaysRG = AlwaysRG::IsEnabled();
+                bool randomRG = RandomRG::IsEnabled();
                 if (ImGui::Checkbox("Always Recoil Guard", &alwaysRG)) {
+                    // Mutually exclusive with Random RG
+                    if (alwaysRG && randomRG) { RandomRG::SetEnabled(false); randomRG = false; }
+                    if (alwaysRG && RandomBlock::IsEnabled()) { RandomBlock::SetEnabled(false); }
                     AlwaysRG::SetEnabled(alwaysRG);
                     LogOut(std::string("[IMGUI][AlwaysRG] ") + (alwaysRG ? "Enabled" : "Disabled"), true);
                     if (g_ShowRGDebugToasts.load()) {
                         DirectDrawHook::AddMessage(std::string("Always RG: ") + (alwaysRG ? "ON" : "OFF"), "ALWAYS_RG", RGB(200,220,255), 1500, 12, 72);
                     }
                 }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Keeps the 10f Recoil Guard window always armed so the dummy will RG if possible.");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("The dummy will RG if possible.");
+
+                ImGui::SameLine();
+                if (ImGui::Checkbox("Random RG", &randomRG)) {
+                    // Mutually exclusive with Always RG
+                    if (randomRG && alwaysRG) { AlwaysRG::SetEnabled(false); alwaysRG = false; }
+                    if (randomRG && RandomBlock::IsEnabled()) { RandomBlock::SetEnabled(false); }
+                    RandomRG::SetEnabled(randomRG);
+                    LogOut(std::string("[IMGUI][RandomRG] ") + (randomRG ? "Enabled" : "Disabled"), true);
+                    if (g_ShowRGDebugToasts.load()) {
+                        DirectDrawHook::AddMessage(std::string("Random RG: ") + (randomRG ? "ON" : "OFF"), "RANDOM_RG", RGB(200,255,200), 1500, 12, 90);
+                    }
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Flip a coin each time the dummy tries to block; fifty percent chance chance to RG the move.");
 
                 ImGui::SameLine();
                 bool crg = g_counterRGEnabled.load();
@@ -230,7 +399,183 @@ namespace ImGuiGui {
             }
 
             // Values sub-tab (P1/P2 values)
-            if (ImGui::BeginTabItem("Values")) {
+            ImGuiTabItemFlags _setVals = (rq == 1) ? ImGuiTabItemFlags_SetSelected : 0;
+            if (ImGui::BeginTabItem("Values", nullptr, _setVals)) {
+                guiState.mainMenuSubTab = 1;
+                // Detect opening of the Values tab to resync dropdown defaults once
+                bool valuesJustOpened = ImGui::IsItemActivated();
+                // Read engine regen params for debug/gating using stateful inference to avoid false F4
+                uint16_t engineParamA=0, engineParamB=0; EngineRegenMode regenMode = EngineRegenMode::Unknown;
+                bool gotParams = GetEngineRegenStatus(regenMode, engineParamA, engineParamB);
+                // Automatic Recovery control (top of section)
+                ImGui::SeparatorText("Automatic Recovery (F5)");
+                int curAutoIdx = 0; // Disabled
+                if (gotParams && regenMode == EngineRegenMode::F5_FullOrPreset) {
+                    curAutoIdx = (engineParamB == 3332) ? 2 : 1; // 1=Full values (A==1000/2000), 2=FM values (B==3332)
+                }
+                int autoIdx = curAutoIdx;
+                const char* autoItems[] = { "Disabled", "Full values", "FM values (3332)" };
+                ImGui::SetNextItemWidth(260);
+                if (ImGui::Combo("##AutoRecoveryMode", &autoIdx, autoItems, IM_ARRAYSIZE(autoItems))) {
+                    // Apply immediately on change
+                    if (autoIdx == 0) {
+                        // Disabled
+                        WriteEngineRegenParams(0, 0);
+                    } else if (autoIdx == 1) {
+                        // Full values
+                        ForceEngineF5Full();
+                    } else if (autoIdx == 2) {
+                        // FM values
+                        WriteEngineRegenParams(1000, 3332);
+                    }
+
+                    // Additionally, set HP/Meter/RF in display and memory for both players
+                    // Per request: ONLY when switching FROM Full/FM TO Disabled, snap values to 9999/0/0.0
+                    // CRITICAL: Never modify game memory during online mode
+                    if (autoIdx != curAutoIdx && autoIdx == 0 && (curAutoIdx == 1 || curAutoIdx == 2) && !g_onlineModeActive.load()) {
+                        uintptr_t base = GetEFZBase();
+                        if (base) {
+                            // Targets when disabling Automatic Recovery
+                            int hpTarget = MAX_HP; // 9999
+                            int hpTargetP2 = MAX_HP; // 9999
+                            WORD meterTarget = 0; // always 0 for both Full/FM per request
+                            double rfTarget = 0.0; // always 0.0 for both Full/FM per request
+
+                            // Update displayData (used by Apply flow)
+                            displayData.hp1 = hpTarget;
+                            displayData.hp2 = hpTargetP2;
+                            displayData.meter1 = meterTarget;
+                            displayData.meter2 = meterTarget;
+                            displayData.rf1 = rfTarget;
+                            displayData.rf2 = rfTarget;
+
+                            // Update ImGui-local mirrors so the Values tab reflects the snap immediately
+                            guiState.localData.hp1 = hpTarget;
+                            guiState.localData.hp2 = hpTargetP2;
+                            guiState.localData.meter1 = meterTarget;
+                            guiState.localData.meter2 = meterTarget;
+                            guiState.localData.rf1 = rfTarget;
+                            guiState.localData.rf2 = rfTarget;
+                            // RF color should be Red when Disabled per request
+                            guiState.localData.p1BlueIC = false;
+                            guiState.localData.p2BlueIC = false;
+
+                            // Write to memory immediately
+                            uintptr_t p1B=0, p2B=0; SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1B, sizeof(p1B)); SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2B, sizeof(p2B));
+                            if (p1B && p2B) {
+                                // HP
+                                SafeWriteMemory(p1B + HP_OFFSET, &hpTarget, sizeof(hpTarget));
+                                SafeWriteMemory(p1B + HP_BAR_OFFSET, &hpTarget, sizeof(hpTarget));
+                                SafeWriteMemory(p2B + HP_OFFSET, &hpTargetP2, sizeof(hpTargetP2));
+                                SafeWriteMemory(p2B + HP_BAR_OFFSET, &hpTargetP2, sizeof(hpTargetP2));
+                                // Meter
+                                SafeWriteMemory(p1B + METER_OFFSET, &meterTarget, sizeof(meterTarget));
+                                SafeWriteMemory(p2B + METER_OFFSET, &meterTarget, sizeof(meterTarget));
+                                // RF and IC color (force Red)
+                                (void)SetRFValuesDirect(rfTarget, rfTarget);
+                                SetICColorDirect(false, false);
+                                LogOut("[IMGUI][F5] Disabled from " + std::to_string(curAutoIdx) + ": Applied targets HP=9999, Meter=0, RF=0.0 and IC=Red for both players", detailedLogging.load());
+                            }
+                        }
+                    }
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("(applies immediately)");
+                // RF Recovery (F4) control (above manual values)
+                ImGui::Separator();
+                ImGui::SeparatorText("RF Recovery (F4)");
+                int curF4Idx = 0; // Disabled
+                bool derivedRfValid = false;
+                float derivedRf = 0.0f;
+                bool derivedBlue = false;
+                if (gotParams && engineParamB == 9999) {
+                    if (engineParamA == 0) {
+                        curF4Idx = 0;
+                    } else if (engineParamA == 1000) {
+                        curF4Idx = 1; // Full Blue
+                    } else {
+                        curF4Idx = 2; // Custom tuning
+                        if (DeriveRfFromParamA(engineParamA, derivedRf, derivedBlue)) {
+                            derivedRfValid = true;
+                        }
+                    }
+                }
+                // Always reflect actual engine state to keep combobox in sync
+                s_f4ModeIdx = curF4Idx;
+                if (curF4Idx == 2 && derivedRfValid) {
+                    s_f4Blue = derivedBlue;
+                    int roundedRf = (int)(derivedRf + 0.5f);
+                    if (roundedRf < 0) roundedRf = 0;
+                    if (roundedRf > (int)MAX_RF) roundedRf = (int)MAX_RF;
+                    s_f4RfAmount = roundedRf;
+                }
+                const char* f4Items[] = { "Disabled", "Full (Blue 1000)", "Custom" };
+                ImGui::SetNextItemWidth(260);
+                bool f5Active = (regenMode == EngineRegenMode::F5_FullOrPreset);
+                if (f5Active) ImGui::BeginDisabled();
+                int prevF4Idx = s_f4ModeIdx;
+                ImGui::Combo("##F4Mode", &s_f4ModeIdx, f4Items, IM_ARRAYSIZE(f4Items));
+                g_f4UiMode = s_f4ModeIdx; // persist selection for Apply gating
+                // Apply immediately on mode change
+                if (s_f4ModeIdx != prevF4Idx) {
+                    if (s_f4ModeIdx == 0) {
+                        // Clear B to disable recovery; zero A for clarity
+                        WriteEngineRegenParams(0, 0);
+                    } else if (s_f4ModeIdx == 1) {
+                        // Full RF on Blue gauge
+                        WriteEngineRegenParams(1000, 9999);
+                    }
+                }
+                if (s_f4ModeIdx == 2) {
+                    // Custom: choose Red/Blue and RF amount 0..1000, map to Param A, and set B=9999. Apply on any change.
+                    bool writeNow = false;
+                    ImGui::TextUnformatted("Color:"); ImGui::SameLine();
+                    bool wasBlue = s_f4Blue;
+                    if (ImGui::RadioButton("Red##F4", !s_f4Blue)) { s_f4Blue = false; }
+                    ImGui::SameLine(); if (ImGui::RadioButton("Blue##F4", s_f4Blue)) { s_f4Blue = true; }
+                    if (s_f4Blue != wasBlue) writeNow = true;
+                    ImGui::SetNextItemWidth(200);
+                    int rfPrev = s_f4RfAmount;
+                    if (ImGui::InputInt("RF amount (0..1000)", &s_f4RfAmount)) {
+                        if (s_f4RfAmount < 0) s_f4RfAmount = 0; else if (s_f4RfAmount > 1000) s_f4RfAmount = 1000;
+                        if (s_f4RfAmount != rfPrev) writeNow = true;
+                    }
+                    if (prevF4Idx != 2) writeNow = true;
+                    if (writeNow) {
+                        int rf = s_f4RfAmount;
+                        uint16_t a = 0;
+                        if (!s_f4Blue) {
+                            // Red: A = RF (0..999)
+                            if (rf > 999) rf = 999;
+                            a = (uint16_t)rf;
+                        } else {
+                            // Blue: A = (rf==1000 ? 1000 : 2000 - rf)
+                            a = (rf >= 1000) ? 1000 : (uint16_t)(2000 - rf);
+                        }
+                        WriteEngineRegenParams(a, 9999);
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Type a value or use arrows to set RF recovery amount (0-999 for Red, 1000 - Blue \n If <1000 and Blue is selected - will make the gauge blue with the said values).");
+                }
+                if (f5Active) {
+                    ImGui::EndDisabled();
+                    ImGui::TextDisabled("(disabled: Automatic Recovery enabled)");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Disable Automatic Recovery to adjust RF Recovery (F4).");
+                }
+                
+                // Track if F4 is actively controlling values (anything except Disabled)
+                bool f4Active = (s_f4ModeIdx != 0);
+                ImGui::SameLine();
+                ImGui::TextDisabled("(also maxes out HP and Meter)");
+                // Lock entire Values when engine F5 cycle OR F4 fine-tune is active, or when user selected F4 mode != Disabled
+                bool engineLocksValues = (regenMode == EngineRegenMode::F5_FullOrPreset) || (regenMode == EngineRegenMode::F4_FineTuneActive);
+                // Continuous Recovery global lock: if either player has any active CR target (hp/meter/rf)
+                bool crAny = (guiState.localData.p1ContinuousRecoveryEnabled && (guiState.localData.p1RecoveryHpMode>0 || guiState.localData.p1RecoveryMeterMode>0 || guiState.localData.p1RecoveryRfMode>0)) ||
+                              (guiState.localData.p2ContinuousRecoveryEnabled && (guiState.localData.p2RecoveryHpMode>0 || guiState.localData.p2RecoveryMeterMode>0 || guiState.localData.p2RecoveryRfMode>0));
+                bool globalValuesLocked = engineLocksValues || crAny || f4Active;
+                // Distinct section for manual values below F4/F5
+                ImGui::Separator();
+                ImGui::SeparatorText("Manual Values");
+                if (globalValuesLocked) ImGui::BeginDisabled();
                 if (ImGui::BeginTable("values_table", 3, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp)) {
                     // Compute a compact label column width based on the longest label text
                     const char* labelTexts[] = { "HP", "Meter", "RF", "Freeze RF", "RF color", "X", "Y" };
@@ -254,6 +599,46 @@ namespace ImGuiGui {
                     ImGui::TableNextColumn(); ImGui::TextUnformatted("");
                     headerCell((guiState.localData.p1CharName[0] ? guiState.localData.p1CharName : "Unknown"), ImVec4(0.5f, 0.8f, 1.0f, 1.0f));
                     headerCell((guiState.localData.p2CharName[0] ? guiState.localData.p2CharName : "Unknown"), ImVec4(1.0f, 0.5f, 0.5f, 1.0f));
+
+                    struct ManualPreset {
+                        const char* label;
+                        int hp;
+                        int meter;
+                        float rf;
+                    };
+                    static const ManualPreset kManualPresets[] = {
+                        { "Default", 9999, 0, 0.0f },
+                        { "Max", 9999, MAX_METER, MAX_RF },
+                        { "FM", 3333, MAX_METER, MAX_RF }
+                    };
+                    auto applyPreset = [&](int player, const ManualPreset& preset) {
+                        if (player == 1) {
+                            guiState.localData.hp1 = CLAMP(preset.hp, 0, MAX_HP);
+                            guiState.localData.meter1 = CLAMP(preset.meter, 0, MAX_METER);
+                            guiState.localData.rf1 = CLAMP(preset.rf, 0.0f, MAX_RF);
+                        } else {
+                            guiState.localData.hp2 = CLAMP(preset.hp, 0, MAX_HP);
+                            guiState.localData.meter2 = CLAMP(preset.meter, 0, MAX_METER);
+                            guiState.localData.rf2 = CLAMP(preset.rf, 0.0f, MAX_RF);
+                        }
+                    };
+                    auto renderPresetButtons = [&](int player) {
+                        bool first = true;
+                        for (const auto& preset : kManualPresets) {
+                            if (!first) ImGui::SameLine();
+                            first = false;
+                            std::string btnLabel = std::string(preset.label) + (player == 1 ? "##preset_p1_" : "##preset_p2_") + preset.label;
+                            if (ImGui::SmallButton(btnLabel.c_str())) {
+                                applyPreset(player, preset);
+                            }
+                        }
+                    };
+
+                    // Preset buttons row
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn(); ImGui::TextUnformatted("Presets");
+                    ImGui::TableNextColumn(); renderPresetButtons(1);
+                    ImGui::TableNextColumn(); renderPresetButtons(2);
 
                     // HP
                     ImGui::TableNextRow();
@@ -302,10 +687,9 @@ namespace ImGuiGui {
                     ImGui::TableNextColumn(); ImGui::TextUnformatted("Freeze RF");
                     ImGui::TableNextColumn();
                     {
-                        static bool s_uiFreezeP1 = false; static bool s_uiFreezeP1ColorBlue = true;
                         bool fr1 = s_uiFreezeP1; if (ImGui::Checkbox("Freeze##rf_p1", &fr1)) {
                             s_uiFreezeP1 = fr1;
-                            if (fr1) { StartRFFreezeOne(1, guiState.localData.rf1); }
+                            if (fr1) { StartRFFreezeOneFromUI(1, guiState.localData.rf1); }
                             else { StopRFFreezePlayer(1); }
                         }
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Continuously holds RF at the current value.");
@@ -316,10 +700,9 @@ namespace ImGuiGui {
                     }
                     ImGui::TableNextColumn();
                     {
-                        static bool s_uiFreezeP2 = false; static bool s_uiFreezeP2ColorBlue = true;
                         bool fr2 = s_uiFreezeP2; if (ImGui::Checkbox("Freeze##rf_p2", &fr2)) {
                             s_uiFreezeP2 = fr2;
-                            if (fr2) { StartRFFreezeOne(2, guiState.localData.rf2); }
+                            if (fr2) { StartRFFreezeOneFromUI(2, guiState.localData.rf2); }
                             else { StopRFFreezePlayer(2); }
                         }
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Continuously holds RF at the current value.");
@@ -329,44 +712,91 @@ namespace ImGuiGui {
                         SetRFFreezeColorDesired(2, s_uiFreezeP2, s_uiFreezeP2ColorBlue);
                     }
 
-                    // RF color (formerly IC Color)
+                    // RF color selection (radio buttons choose desired color; applied on Apply)
                     ImGui::TableNextRow();
                     ImGui::TableNextColumn(); ImGui::TextUnformatted("RF color");
+                    // Determine if either side's color is currently managed by Freeze/CR
+                    auto crColorManagedRow = [&](int player)->bool {
+                        if (player == 1) {
+                            if (!guiState.localData.p1ContinuousRecoveryEnabled) return false;
+                            if (guiState.localData.p1RecoveryRfMode == 3 || guiState.localData.p1RecoveryRfMode == 4) return true; // Red presets force Red
+                            if (guiState.localData.p1RecoveryRfMode == 5 && guiState.localData.p1RecoveryRfForceBlueIC) return true; // Custom+BIC forces Blue
+                            return false;
+                        } else {
+                            if (!guiState.localData.p2ContinuousRecoveryEnabled) return false;
+                            if (guiState.localData.p2RecoveryRfMode == 3 || guiState.localData.p2RecoveryRfMode == 4) return true;
+                            if (guiState.localData.p2RecoveryRfMode == 5 && guiState.localData.p2RecoveryRfForceBlueIC) return true;
+                            return false;
+                        }
+                    };
+                    bool p1ManagedColor = IsRFFreezeColorManaging(1) || crColorManagedRow(1);
+                    bool p2ManagedColor = IsRFFreezeColorManaging(2) || crColorManagedRow(2);
+
                     ImGui::TableNextColumn();
                     {
-                        if (ImGui::Button("Red##p1RF")) { guiState.localData.p1BlueIC = false; }
+                        if (p1ManagedColor) ImGui::BeginDisabled();
+                        bool p1Blue = guiState.localData.p1BlueIC;
+                        if (ImGui::RadioButton("Red##p1RF", !p1Blue)) { guiState.localData.p1BlueIC = false; p1Blue = false; }
                         ImGui::SameLine();
-                        if (ImGui::Button("Blue##p1RF")) { guiState.localData.p1BlueIC = true; }
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Swap P1 RF gauge color. Applied on 'Apply'.");
+                        if (ImGui::RadioButton("Blue##p1RF", p1Blue)) { guiState.localData.p1BlueIC = true; p1Blue = true; }
+                        if (p1ManagedColor) {
+                            ImGui::EndDisabled();
+                            ImGui::SameLine();
+                            ImGui::TextDisabled("(managed)");
+                            if (ImGui::IsItemHovered()) ImGui::SetTooltip("P1 color is currently managed by RF Freeze or Continuous Recovery.");
+                        } else {
+                            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Select P1 RF gauge color. Takes effect on Apply. Not a continuous lock.");
+                        }
                     }
                     ImGui::TableNextColumn();
                     {
-                        if (ImGui::Button("Red##p2RF")) { guiState.localData.p2BlueIC = false; }
+                        if (p2ManagedColor) ImGui::BeginDisabled();
+                        bool p2Blue = guiState.localData.p2BlueIC;
+                        if (ImGui::RadioButton("Red##p2RF", !p2Blue)) { guiState.localData.p2BlueIC = false; p2Blue = false; }
                         ImGui::SameLine();
-                        if (ImGui::Button("Blue##p2RF")) { guiState.localData.p2BlueIC = true; }
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Swap P2 RF gauge color. Applied on 'Apply'.");
+                        if (ImGui::RadioButton("Blue##p2RF", p2Blue)) { guiState.localData.p2BlueIC = true; p2Blue = true; }
+                        if (p2ManagedColor) {
+                            ImGui::EndDisabled();
+                            ImGui::SameLine();
+                            ImGui::TextDisabled("(managed)");
+                            if (ImGui::IsItemHovered()) ImGui::SetTooltip("P2 color is currently managed by RF Freeze or Continuous Recovery.");
+                        } else {
+                            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Select P2 RF gauge color. Takes effect on Apply. Not a continuous lock.");
+                        }
                     }
 
+                    // Temporarily unlock X/Y even when values are globally locked by F4/F5/CR
+                    if (globalValuesLocked) ImGui::EndDisabled();
                     // X position
                     ImGui::TableNextRow();
                     ImGui::TableNextColumn(); ImGui::TextUnformatted("X");
-                    ImGui::TableNextColumn(); { float v = (float)guiState.localData.x1; if (ImGui::InputFloat("##x_p1", &v, 1.0f, 10.0f, "%.2f")) guiState.localData.x1 = v; }
-                    ImGui::TableNextColumn(); { float v = (float)guiState.localData.x2; if (ImGui::InputFloat("##x_p2", &v, 1.0f, 10.0f, "%.2f")) guiState.localData.x2 = v; }
+                    ImGui::TableNextColumn(); ImGui::InputDouble("##x_p1", &guiState.localData.x1, 1.0, 10.0, "%.2f");
+                    ImGui::TableNextColumn(); ImGui::InputDouble("##x_p2", &guiState.localData.x2, 1.0, 10.0, "%.2f");
 
                     // Y position
                     ImGui::TableNextRow();
                     ImGui::TableNextColumn(); ImGui::TextUnformatted("Y");
-                    ImGui::TableNextColumn(); { float v = (float)guiState.localData.y1; if (ImGui::InputFloat("##y_p1", &v, 1.0f, 10.0f, "%.2f")) guiState.localData.y1 = v; }
-                    ImGui::TableNextColumn(); { float v = (float)guiState.localData.y2; if (ImGui::InputFloat("##y_p2", &v, 1.0f, 10.0f, "%.2f")) guiState.localData.y2 = v; }
+                    ImGui::TableNextColumn(); ImGui::InputDouble("##y_p1", &guiState.localData.y1, 1.0, 10.0, "%.2f");
+                    ImGui::TableNextColumn(); ImGui::InputDouble("##y_p2", &guiState.localData.y2, 1.0, 10.0, "%.2f");
+                    if (globalValuesLocked) ImGui::BeginDisabled();
 
                     ImGui::EndTable();
+                }
+                if (globalValuesLocked) ImGui::EndDisabled();
+                // Short guidance message when engine regen is active
+                if (regenMode == EngineRegenMode::F4_FineTuneActive) {
+                    ImGui::TextWrapped("Currently, the game has RF Recovery enabled (F4). To edit values here, set Automatic Recovery (F5) to Disabled in-game.");
+                } else if (regenMode == EngineRegenMode::F5_FullOrPreset) {
+                    ImGui::TextWrapped("Currently, the game has Automatic regeneration enabled (F5). To edit values here, set Automatic Recovery (F5) to Disabled in-game.");
                 }
                 ImGui::Dummy(ImVec2(1, 4));
                 ImGui::EndTabItem();
             }
 
             // Options sub-tab
-            if (ImGui::BeginTabItem("Options")) {
+            ImGuiTabItemFlags _setOpts = (rq == 2) ? ImGuiTabItemFlags_SetSelected : 0;
+            if (ImGui::BeginTabItem("Options", nullptr, _setOpts)) {
+                guiState.mainMenuSubTab = 2;
                 // Continuous Recovery (Per-Player)
                 ImGui::SeparatorText("Continuous Recovery");
                 ImGui::TextWrapped("Restores values when returning to neutral/crouch/jump. Per-player; defaults OFF.");
@@ -384,6 +814,10 @@ namespace ImGuiGui {
                     bool en = isP1 ? guiState.localData.p1ContinuousRecoveryEnabled : guiState.localData.p2ContinuousRecoveryEnabled;
                     if (ImGui::Checkbox(isP1?"Enable (P1)##contrecp1":"Enable (P2)##contrecp2", &en)) {
                         if (isP1) guiState.localData.p1ContinuousRecoveryEnabled = en; else guiState.localData.p2ContinuousRecoveryEnabled = en;
+                        // When enabling CR, disable engine-managed recovery (F4/F5) to avoid conflicts
+                        if (en) {
+                            WriteEngineRegenParams(0, 0);
+                        }
                     }
                     // HP presets
                     ImGui::TextUnformatted("HP:"); ImGui::SameLine();
@@ -463,8 +897,15 @@ namespace ImGuiGui {
 
                 bool fmBypass = IsFinalMemoryBypassEnabled();
                 if (ImGui::Checkbox("Final Memory: Allow at any HP", &fmBypass)) {
-                    (void)SetFinalMemoryBypass(fmBypass);
-                    LogOut(std::string("[IMGUI][FM] ") + (fmBypass ? "Enabled" : "Disabled") + " FM HP bypass.", true);
+                    const int changes = SetFinalMemoryBypass(fmBypass);
+                    LogOut(
+                        std::string("[IMGUI][FM] ")
+                        + (fmBypass ? "Enabled" : "Disabled")
+                        + " FM HP bypass request. changes="
+                        + std::to_string(changes)
+                        + " installed="
+                        + (IsFinalMemoryBypassInstalled() ? "1" : "0"),
+                        true);
                 }
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Let any character use FM regardless of HP.");
 
@@ -480,6 +921,211 @@ namespace ImGuiGui {
                 }
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggles the numeric frame advantage readout (including RG FA1/FA2).");
 
+                auto showWrappedTooltip = [](const char* text) {
+                    if (!ImGui::IsItemHovered()) return;
+                    ImGui::BeginTooltip();
+                    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
+                    ImGui::TextUnformatted(text);
+                    ImGui::PopTextWrapPos();
+                    ImGui::EndTooltip();
+                };
+
+                ImGui::Spacing();
+                ImGui::SeparatorText("Framebar");
+                bool showFrameBar = Config::GetSettings().showFrameBar;
+                if (ImGui::Checkbox("Enable Framebar", &showFrameBar)) {
+                    Config::SetSetting("General", "showFrameBar", showFrameBar ? "1" : "0");
+                    FrameBar::g_enabled.store(showFrameBar);
+                    FrameBar::Reset();
+                }
+                showWrappedTooltip("Shows a per-player timeline of movement, attacks, active boxes, hitstun, blockstun, Recoil Guard, projectiles, and freeze states.");
+
+                if (showFrameBar) {
+                    ImGui::Indent();
+
+                    int timingMode = Config::GetSettings().frameBarTimingMode;
+                    const char* timingItems[] = { "Subframes", "Visual Frames" };
+                    ImGui::SetNextItemWidth(180);
+                    if (ImGui::Combo("Cell Step", &timingMode, timingItems, IM_ARRAYSIZE(timingItems))) {
+                        Config::SetSetting("General", "frameBarTimingMode", std::to_string(timingMode));
+                        FrameBar::Reset();
+                    }
+                    showWrappedTooltip("Subframes shows every sampled game subframe. Visual Frames keeps one cell per displayed game frame.");
+
+                    int detailMode = Config::GetSettings().frameBarDetailMode;
+                    const char* detailItems[] = { "Full", "Compact", "Bars Only" };
+                    ImGui::SetNextItemWidth(180);
+                    if (ImGui::Combo("Detail", &detailMode, detailItems, IM_ARRAYSIZE(detailItems))) {
+                        Config::SetSetting("General", "frameBarDetailMode", std::to_string(detailMode));
+                    }
+                    showWrappedTooltip("Full shows every status line and marker. Compact keeps core timing. Bars Only hides text and detailed marker strips.");
+
+                    ImGui::Unindent();
+                }
+
+                ImGui::Spacing();
+                ImGui::SeparatorText("Display Overlays");
+                bool showHitboxes = Config::GetSettings().collisionDisplayHitboxes;
+                if (ImGui::Checkbox("Hitboxes", &showHitboxes)) {
+                    CollisionDisplay::SetLayerEnabled(0, showHitboxes);
+                }
+                if (showHitboxes) {
+                    ImGui::Indent();
+                    bool p1Hitboxes = Config::GetSettings().collisionDisplayP1Hitboxes;
+                    if (ImGui::Checkbox("P1 Hitboxes", &p1Hitboxes)) {
+                        Config::SetSetting("General", "collisionDisplayP1Hitboxes",
+                                           p1Hitboxes ? "1" : "0");
+                    }
+                    bool p2Hitboxes = Config::GetSettings().collisionDisplayP2Hitboxes;
+                    if (ImGui::Checkbox("P2 Hitboxes", &p2Hitboxes)) {
+                        Config::SetSetting("General", "collisionDisplayP2Hitboxes",
+                                           p2Hitboxes ? "1" : "0");
+                    }
+                    ImGui::Unindent();
+                }
+                bool showHurtboxes = Config::GetSettings().collisionDisplayHurtboxes;
+                if (ImGui::Checkbox("Hurtboxes", &showHurtboxes)) {
+                    CollisionDisplay::SetLayerEnabled(1, showHurtboxes);
+                }
+                if (showHurtboxes) {
+                    ImGui::Indent();
+                    bool p1Hurtboxes = Config::GetSettings().collisionDisplayP1Hurtboxes;
+                    if (ImGui::Checkbox("P1 Hurtboxes", &p1Hurtboxes)) {
+                        Config::SetSetting("General", "collisionDisplayP1Hurtboxes",
+                                           p1Hurtboxes ? "1" : "0");
+                    }
+                    bool p2Hurtboxes = Config::GetSettings().collisionDisplayP2Hurtboxes;
+                    if (ImGui::Checkbox("P2 Hurtboxes", &p2Hurtboxes)) {
+                        Config::SetSetting("General", "collisionDisplayP2Hurtboxes",
+                                           p2Hurtboxes ? "1" : "0");
+                    }
+                    ImGui::Unindent();
+                }
+                bool showCollisionBoxes = Config::GetSettings().collisionDisplayCollisionBoxes;
+                if (ImGui::Checkbox("Collision Boxes", &showCollisionBoxes)) {
+                    CollisionDisplay::SetLayerEnabled(2, showCollisionBoxes);
+                }
+                if (showCollisionBoxes) {
+                    ImGui::Indent();
+                    bool p1CollisionBoxes = Config::GetSettings().collisionDisplayP1CollisionBoxes;
+                    if (ImGui::Checkbox("P1 Collision Boxes", &p1CollisionBoxes)) {
+                        Config::SetSetting("General", "collisionDisplayP1CollisionBoxes",
+                                           p1CollisionBoxes ? "1" : "0");
+                    }
+                    bool p2CollisionBoxes = Config::GetSettings().collisionDisplayP2CollisionBoxes;
+                    if (ImGui::Checkbox("P2 Collision Boxes", &p2CollisionBoxes)) {
+                        Config::SetSetting("General", "collisionDisplayP2CollisionBoxes",
+                                           p2CollisionBoxes ? "1" : "0");
+                    }
+                    ImGui::Unindent();
+                }
+                bool showProjectileInteractions = Config::GetSettings().collisionDisplayProjectileInteractions;
+                if (ImGui::Checkbox("Projectile Interactions", &showProjectileInteractions)) {
+                    CollisionDisplay::SetLayerEnabled(3, showProjectileInteractions);
+                }
+                showWrappedTooltip("Replaces Revival's display hotkeys with this mod's scaled overlay renderer. Player filters include each fighter and their owned projectile boxes; diagnostic dots and ranges remain separate.");
+
+                int collisionAlpha = Config::GetSettings().collisionDisplayFillAlphaPercent;
+                ImGui::SetNextItemWidth(180);
+                if (ImGui::SliderInt("Box Fill Alpha", &collisionAlpha, 0, 100, "%d%%")) {
+                    Config::SetSetting("General", "collisionDisplayFillAlphaPercent", std::to_string(collisionAlpha));
+                }
+
+                if (showProjectileInteractions) {
+                    ImGui::Indent();
+                    bool projectileBoxes = Config::GetSettings().collisionDisplayProjectileBoxes;
+                    if (ImGui::Checkbox("Projectile Boxes", &projectileBoxes)) {
+                        Config::SetSetting("General", "collisionDisplayProjectileBoxes", projectileBoxes ? "1" : "0");
+                    }
+                    bool projectileOrigins = Config::GetSettings().collisionDisplayProjectileOrigins;
+                    if (ImGui::Checkbox("Origin / Range Dots", &projectileOrigins)) {
+                        Config::SetSetting("General", "collisionDisplayProjectileOrigins", projectileOrigins ? "1" : "0");
+                    }
+                    showWrappedTooltip("Dots use EFZ projectile anchors / activation points, not collision-box centers.");
+                    bool projectileIntersections = Config::GetSettings().collisionDisplayProjectileIntersections;
+                    if (ImGui::Checkbox("Intersection Boxes", &projectileIntersections)) {
+                        Config::SetSetting("General", "collisionDisplayProjectileIntersections", projectileIntersections ? "1" : "0");
+                    }
+                    ImGui::TextDisabled("Mizuka note display settings are in the Character tab.");
+                    ImGui::Unindent();
+                }
+
+                ImGui::Spacing();
+                ImGui::SeparatorText("Combo Statistics");
+                ImGui::TextWrapped("Shows a compact combo summary during Practice. The final combo state stays on-screen until the match ends.");
+
+                bool showComboOverlay = Config::GetSettings().showComboStatisticsOverlay;
+                if (ImGui::Checkbox("Enable Combo Statistics Overlay", &showComboOverlay)) {
+                    Config::SetSetting("General", "showComboStatisticsOverlay", showComboOverlay ? "1" : "0");
+                    ComboOverlay::ClearDisplay();
+                }
+                showWrappedTooltip("Turns the in-match combo statistics card on or off.");
+
+                if (showComboOverlay) {
+                    ImGui::Indent();
+
+                    bool showDetailRow = Config::GetSettings().comboOverlayShowDetailRow;
+                    if (ImGui::Checkbox("Show Detail Row", &showDetailRow)) {
+                        Config::SetSetting("General", "comboOverlayShowDetailRow", showDetailRow ? "1" : "0");
+                        ComboOverlay::ClearDisplay();
+                    }
+
+                    if (showDetailRow) {
+                        int detailSource = Config::GetSettings().comboOverlayDetailRowSource;
+                        const char* detailItems[] = { "Combo State", "Last Hit" };
+                        ImGui::SetNextItemWidth(180);
+                        if (ImGui::Combo("Detail Row Source", &detailSource, detailItems, IM_ARRAYSIZE(detailItems))) {
+                            Config::SetSetting("General", "comboOverlayDetailRowSource", std::to_string(detailSource));
+                            ComboOverlay::ClearDisplay();
+                        }
+                    }
+
+                    bool showFinalSummary = Config::GetSettings().comboOverlayShowFinalSummary;
+                    if (ImGui::Checkbox("Keep Final Summary", &showFinalSummary)) {
+                        Config::SetSetting("General", "comboOverlayShowFinalSummary", showFinalSummary ? "1" : "0");
+                        ComboOverlay::ClearDisplay();
+                    }
+                    showWrappedTooltip("Keeps the last combo visible until the match ends instead of hiding it when the combo drops.");
+
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+                    ImGui::TextWrapped("Advanced appearance options are under Settings > General > Combo Statistics.");
+                    ImGui::PopStyleColor();
+                    ImGui::Unindent();
+                }
+
+                // Framestep mode
+                ImGui::Spacing();
+                ImGui::SeparatorText("Framestep");
+                bool framestepEnabled = Config::GetSettings().framestepEnabled;
+                if (ImGui::Checkbox("Enable Framestep", &framestepEnabled)) {
+                    Config::SetSetting("General", "framestepEnabled", framestepEnabled ? "1" : "0");
+                }
+                bool suppressRevivalFramestep = Config::GetSettings().suppressRevivalFramestep;
+                if (ImGui::Checkbox("Suppress Revival Framestep", &suppressRevivalFramestep)) {
+                    Config::SetSetting("General", "suppressRevivalFramestep", suppressRevivalFramestep ? "1" : "0");
+                }
+                if (Framestep::IsEnabled()) {
+                    ImGui::Text("Step Mode:");
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth(200);
+                    const char* stepModeItems[] = { "Full Frames", "Subframes" };
+                    int currentMode = (Framestep::GetStepMode() == Framestep::StepMode::FullFrame) ? 0 : 1;
+                    if (ImGui::Combo("##FramestepMode", &currentMode, stepModeItems, IM_ARRAYSIZE(stepModeItems))) {
+                        Framestep::SetStepMode(currentMode == 0 ? Framestep::StepMode::FullFrame : Framestep::StepMode::Subframe);
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::BeginTooltip();
+                        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
+                        ImGui::TextUnformatted("Full Frames: Each step advances one visual frame.");
+                        ImGui::TextUnformatted("Subframes: Each step advances one subframe. Shows fractional visual frames.");
+                        //ImGui::TextUnformatted("\nNote: Input buffer updates at 64fps (every 3 subframes), so buffer index advances every 3rd step in Subframe mode.");
+                        ImGui::TextUnformatted("\nHotkeys: Space = Pause/Resume, P = Step Forward");
+                        ImGui::TextUnformatted("Only works in Practice mode (or any mode if 'Restrict to Practice' is off).");
+                        ImGui::PopTextWrapPos();
+                        ImGui::EndTooltip();
+                    }
+                }
+
                 ImGui::EndTabItem();
             }
 
@@ -491,35 +1137,41 @@ namespace ImGuiGui {
 
     // Auto Action Tab
     void RenderAutoActionTab() {
-        // Auto-action master toggle
-        bool enabled = guiState.localData.autoAction;
-        if (ImGui::Checkbox("Enable Auto Action System", &enabled)) {
-            guiState.localData.autoAction = enabled;
-        }
+        // Sub-tabs: Triggers | Macros
+    if (ImGui::BeginTabBar("##AutoActionTabs", ImGuiTabBarFlags_None)) {
+                // Track Macros tab open/close to trigger reload on entry
+                static bool s_macrosActivePrev = false;
+                bool macrosActiveThisFrame = false;
+                int rq2 = guiState.requestedAutoActionSubTab; guiState.requestedAutoActionSubTab = -1;
+                // Triggers sub-tab
+                ImGuiTabItemFlags _setTrig = (rq2 == 0) ? ImGuiTabItemFlags_SetSelected : 0;
+                if (ImGui::BeginTabItem("Triggers", nullptr, _setTrig)) {
+                    guiState.autoActionSubTab = 0;
+                const int autoActionTarget = ResolveAutoActionTargetPlayer();
+                ImGui::Text("Target: P%d (opponent side)", autoActionTarget);
 
-        // Wake buffering toggle (debug): pre-buffer wake specials/dashes vs frame1 inject
-        bool wakeBuf = g_wakeBufferingEnabled.load();
-        if (ImGui::Checkbox("Pre-buffer wake specials/dashes", &wakeBuf)) {
-            g_wakeBufferingEnabled.store(wakeBuf);
-            LogOut(std::string("[IMGUI] Wake buffering mode: ") + (wakeBuf ? "BUFFERED (early freeze)" : "FRAME1 (no early freeze)"), true);
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("On: buffer wake moves slightly early. Off: do them on the first actionable frame.\nUseful for testing tight wakeup timing.");
-        }
+                // Wake buffering toggle: pre-buffer a 0F wake MACRO early vs play it on the first actionable frame
+                bool wakeBuf = g_wakeBufferingEnabled.load();
+                if (ImGui::Checkbox("Pre-buffer Wakeup", &wakeBuf)) {
+                    g_wakeBufferingEnabled.store(wakeBuf);
+                    LogOut(std::string("[IMGUI] Wake buffering mode: ") + (wakeBuf ? "BUFFERED (early freeze)" : "FRAME1 (no early freeze)"), true);
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("On: start a wakeup macro early so its first attack is buffered. Off: play it on the first actionable frame.\nWakeup specials buffer on their own either way.");
+                }
 
-        // Counter RG toggle moved to Game Settings
-        
-        // Player target selector
-        ImGui::Text("Apply To:");
-        const char* playerItems[] = { "P1 Only", "P2 Only", "Both Players" };
-        int playerIndex = guiState.localData.autoActionPlayer - 1; // Convert 1-based to 0-based
-        if (ImGui::Combo("Target", &playerIndex, playerItems, IM_ARRAYSIZE(playerItems))) {
-            guiState.localData.autoActionPlayer = playerIndex + 1; // Convert back to 1-based
-        }
-        
-        ImGui::Separator();
-        
-        // Define a struct for trigger settings to reduce code repetition
+                // Global: Randomize all triggers toggle (placed with master/wake settings)
+                {
+                    bool randTrig = guiState.localData.randomizeTriggers;
+                    if (ImGui::Checkbox("Randomize Triggers", &randTrig)) {
+                        guiState.localData.randomizeTriggers = randTrig;
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("When ON, each trigger attempt has a fifty percent chance to be skipped.");
+                }
+
+                ImGui::Separator();
+
+                // Define a struct for trigger settings to reduce code repetition
         struct TriggerSettings {
             const char* name;
             bool* enabled;
@@ -528,20 +1180,28 @@ namespace ImGuiGui {
             int* strength; // NEW: Add strength member
             int* custom;
             int* macroSlot; // NEW: Per-trigger macro selection (0=None, 1..Max)
+            int* chargeFollowup; // 0=Off, 1=IC on contact, 2=FIC window
+            uint32_t* poolMask; // NEW: Multi-action pool bitmask (UI motion indices)
+            bool* usePool;      // NEW: Enable random pick from pool
         };
         
         // Define an array of trigger settings
                 TriggerSettings triggers[] = {
                         { "After Block", &guiState.localData.triggerAfterBlock, &guiState.localData.actionAfterBlock, 
-                            &guiState.localData.delayAfterBlock, &guiState.localData.strengthAfterBlock, &guiState.localData.customAfterBlock, &guiState.localData.macroSlotAfterBlock },
+                            &guiState.localData.delayAfterBlock, &guiState.localData.strengthAfterBlock, &guiState.localData.customAfterBlock, &guiState.localData.macroSlotAfterBlock, &guiState.localData.chargeAfterBlock,
+                            &guiState.localData.afterBlockActionPoolMask, &guiState.localData.afterBlockUseActionPool },
                         { "On Wakeup", &guiState.localData.triggerOnWakeup, &guiState.localData.actionOnWakeup, 
-                            &guiState.localData.delayOnWakeup, &guiState.localData.strengthOnWakeup, &guiState.localData.customOnWakeup, &guiState.localData.macroSlotOnWakeup },
+                            &guiState.localData.delayOnWakeup, &guiState.localData.strengthOnWakeup, &guiState.localData.customOnWakeup, &guiState.localData.macroSlotOnWakeup, &guiState.localData.chargeOnWakeup,
+                            &guiState.localData.onWakeupActionPoolMask, &guiState.localData.onWakeupUseActionPool },
                         { "After Hitstun", &guiState.localData.triggerAfterHitstun, &guiState.localData.actionAfterHitstun, 
-                            &guiState.localData.delayAfterHitstun, &guiState.localData.strengthAfterHitstun, &guiState.localData.customAfterHitstun, &guiState.localData.macroSlotAfterHitstun },
+                            &guiState.localData.delayAfterHitstun, &guiState.localData.strengthAfterHitstun, &guiState.localData.customAfterHitstun, &guiState.localData.macroSlotAfterHitstun, &guiState.localData.chargeAfterHitstun,
+                            &guiState.localData.afterHitstunActionPoolMask, &guiState.localData.afterHitstunUseActionPool },
                         { "After Airtech", &guiState.localData.triggerAfterAirtech, &guiState.localData.actionAfterAirtech, 
-                            &guiState.localData.delayAfterAirtech, &guiState.localData.strengthAfterAirtech, &guiState.localData.customAfterAirtech, &guiState.localData.macroSlotAfterAirtech },
+                            &guiState.localData.delayAfterAirtech, &guiState.localData.strengthAfterAirtech, &guiState.localData.customAfterAirtech, &guiState.localData.macroSlotAfterAirtech, &guiState.localData.chargeAfterAirtech,
+                            &guiState.localData.afterAirtechActionPoolMask, &guiState.localData.afterAirtechUseActionPool },
                         { "On RG", &guiState.localData.triggerOnRG, &guiState.localData.actionOnRG,
-                            &guiState.localData.delayOnRG, &guiState.localData.strengthOnRG, &guiState.localData.customOnRG, &guiState.localData.macroSlotOnRG }
+                            &guiState.localData.delayOnRG, &guiState.localData.strengthOnRG, &guiState.localData.customOnRG, &guiState.localData.macroSlotOnRG, &guiState.localData.chargeOnRG,
+                            &guiState.localData.onRGActionPoolMask, &guiState.localData.onRGUseActionPool }
                 };
         
         // Motion list with categories - NOTE: mapping functions below must stay in sync
@@ -550,6 +1210,10 @@ namespace ImGuiGui {
             int motionIndex;      // Index for mapping
             bool isCategory;      // True for category headers (non-selectable)
             bool isSeparator;     // True for visual separator lines
+            // Kano's 22B is a super while the same input family is an
+            // ordinary special elsewhere.  0=always, 1=non-Kano 22,
+            // 2=Kano 22; this keeps the per-character menu truthful.
+            int categoryVariant = 0;
         };
         
         const MotionItem motionItemsWithCategories[] = {
@@ -558,8 +1222,19 @@ namespace ImGuiGui {
             { "  Standing", 0, false, false },
             { "  Crouching", 1, false, false },
             { "  Jumping", 2, false, false },
-            { "  Forward", 22, false, false },
-            { "  Back", 23, false, false },
+            { "", -1, false, true }, // Separator
+
+            // Character-specific normals (filtered by the target fighter).
+            { "COMMAND / DASH NORMALS", -1, true, false },
+            { "  6X (Forward)", 22, false, false },
+            { "  4X (Back)", 23, false, false },
+            { "  1X (Down-back)", 24, false, false },
+            { "  3X (Down-forward)", 25, false, false },
+            { "  j.2X (Air down)", 26, false, false },
+            { "  j.6X (Air forward)", 27, false, false },
+            { "  66X (Dash normal)", 28, false, false },
+            { "  662X (Dash low)", 29, false, false },
+            { "  664X (Dash-back normal)", 30, false, false },
             { "", -1, false, true }, // Separator
             
             // Specials category
@@ -568,14 +1243,15 @@ namespace ImGuiGui {
             { "  623 (DP)", 4, false, false },
             { "  214 (QCB)", 5, false, false },
             { "  41236 (HCF)", 7, false, false },
-            { "  421 (Half-circle Down)", 6, false, false },
+            { "  421", 6, false, false },
             { "  412", 13, false, false },
-            { "  22", 14, false, false },
+            { "  22", 14, false, false, 1 },
             { "", -1, false, true }, // Separator
             
             // Supers category
             { "SUPERS", -1, true, false },
-            { "  214236 (Hybrid)", 8, false, false },
+            { "  22", 14, false, false, 2 },
+            { "  2141236", 8, false, false },
             { "  236236 (Double QCF)", 9, false, false },
             { "  214214 (Double QCB)", 10, false, false },
             { "  641236", 11, false, false },
@@ -589,345 +1265,942 @@ namespace ImGuiGui {
             { "OTHERS", -1, true, false },
             { "  Jump", 17, false, false },
             { "  Dash", 19, false, false },
-            { "  Backdash", 18, false, false }
+            { "  Backdash", 18, false, false },
+            { "  Recoil Ducking (44~66)", 31, false, false }
         };
         
         // Keep old flat list for backwards compatibility with some functions
         const char* motionItems[] = {
             "Standing", "Crouching", "Jumping",
-            "236 (QCF)", "623 (DP)", "214 (QCB)", "421 (Half-circle Down)",
-            "41236 (HCF)", "214236 (Hybrid)", "236236 (Double QCF)", "214214 (Double QCB)",
+            "236 (QCF)", "623 (DP)", "214 (QCB)", "421",
+            "41236 (HCF)", "2141236", "236236 (Double QCF)", "214214 (Double QCB)",
             "641236", "463214", "412", "22", "4123641236", "6321463214",
             "Jump", "Backdash", "Forward Dash", "Block", "Final Memory",
-            "Forward Normal", "Back Normal"
+            "Forward Normal", "Back Normal", "1X", "3X", "j.2X", "j.6X",
+            "66X", "662X", "664X", "Recoil Ducking (44~66)"
         };
 
-        // Compute a compact width that fits the longest action label (plus arrow/padding), so combos aren't overly wide
+    // Compute a compact width that fits the longest action label (plus arrow/padding), so combos aren't overly wide
         ImGuiStyle& _style = ImGui::GetStyle();
-        // Keep combobox compact: make it just wide enough for "Final Memory" (longest we care to fully show)
+        // Keep combobox compact: make it just wide enough for the longer of "Final Memory" or "Macro"
         const float _labelFinalMemory = ImGui::CalcTextSize("Final Memory").x;
+        const float _labelRecoilDucking =
+            ImGui::CalcTextSize("Recoil Ducking (44~66)").x;
         const float _labelMacro = ImGui::CalcTextSize("Macro").x;
-        const float _baseline = (std::max)(_labelFinalMemory, _labelMacro);
-        // Add room for the combo arrow (roughly frame height), frame padding, and small breathing space
-        const float actionComboWidth = _baseline + ImGui::GetFrameHeight() + _style.FramePadding.x * 3.0f + _style.ItemInnerSpacing.x;
+        const float _baseline = (std::max)(
+            _labelRecoilDucking,
+            (std::max)(_labelFinalMemory, _labelMacro));
+        const float actionComboWidth = _baseline + _style.FramePadding.x * 2.0f + ImGui::GetFrameHeight();
+        // Shared A/B/C/D (notated as S for Special button) choice for normals/specials strength
+        const char* buttonItems[] = { "A", "B", "C", "S" };
 
-        // Button list (applies to both directions and motions)
-        const char* buttonItems[] = { "A", "B", "C", "D" };
-
-        // Helpers
-        auto IsNormalAttackAction = [](int action) {
-            return action == ACTION_5A || action == ACTION_5B || action == ACTION_5C ||
-                   action == ACTION_2A || action == ACTION_2B || action == ACTION_2C ||
-                   action == ACTION_JA || action == ACTION_JB || action == ACTION_JC ||
-                   action == ACTION_6A || action == ACTION_6B || action == ACTION_6C ||
-                   action == ACTION_4A || action == ACTION_4B || action == ACTION_4C;
-        };
-        auto IsSpecialMoveAction = [](int action) {
-            return action == ACTION_QCF || action == ACTION_DP || action == ACTION_QCB ||
-                   action == ACTION_421 || action == ACTION_SUPER1 || action == ACTION_SUPER2 ||
-                   action == ACTION_236236 || action == ACTION_214214 || action == ACTION_641236 ||
-                   action == ACTION_463214 || action == ACTION_412 || action == ACTION_22 ||
-                   action == ACTION_4123641236 || action == ACTION_6321463214;
-        };
-        auto GetPostureIndexForAction = [](int action) -> int {
-            if (action == ACTION_5A || action == ACTION_5B || action == ACTION_5C) return 0; // Standing
-            if (action == ACTION_2A || action == ACTION_2B || action == ACTION_2C) return 1; // Crouching
-            if (action == ACTION_JA || action == ACTION_JB || action == ACTION_JC) return 2; // Jumping
-            return -1;
-        };
-        auto GetMotionIndexForAction = [&](int action) -> int {
-            int postureIdx = GetPostureIndexForAction(action);
-            if (postureIdx >= 0) return postureIdx; // 0..2
+        // Mapping helpers between UI motion indices and internal ACTION_* enums
+        auto GetPostureIndexForAction = [](int action)->int {
             switch (action) {
-                case ACTION_QCF: return 3;            // 236
-                case ACTION_DP: return 4;             // 623
-                case ACTION_QCB: return 5;            // 214
-                case ACTION_421: return 6;            // 421
-                case ACTION_SUPER1: return 7;         // 41236
-                case ACTION_SUPER2: return 8;         // 214236 hybrid
-                case ACTION_236236: return 9;         // 236236
-                case ACTION_214214: return 10;        // 214214
-                case ACTION_641236: return 11;        // 641236
-                case ACTION_463214: return 12;        // 463214
-                case ACTION_412: return 13;           // 412
-                case ACTION_22: return 14;            // 22
-                case ACTION_4123641236: return 15;    // 4123641236
-                case ACTION_6321463214: return 16;    // 6321463214
-                case ACTION_JUMP: return 17;          // Jump
-                case ACTION_BACKDASH: return 18;      // Backdash
-                case ACTION_FORWARD_DASH: return 19;  // Forward Dash
-                case ACTION_BLOCK: return 20;         // Block
-                case ACTION_FINAL_MEMORY: return 21;  // Final Memory
-                case ACTION_6A:
-                case ACTION_6B:
-                case ACTION_6C: return 22; // Forward Normal group
-                case ACTION_4A:
-                case ACTION_4B:
-                case ACTION_4C: return 23; // Back Normal group
-                default: return 0; // default Standing
+                case ACTION_5A: case ACTION_5B: case ACTION_5C: case ACTION_5D: return 0; // Standing
+                case ACTION_2A: case ACTION_2B: case ACTION_2C: case ACTION_2D: return 1; // Crouching
+                case ACTION_JA: case ACTION_JB: case ACTION_JC: case ACTION_JD: return 2; // Jumping
+                default: return -1;
             }
         };
-        auto MapPostureAndButtonToAction = [](int postureIdx, int buttonIdx) -> int {
-            // buttonIdx: 0=A,1=B,2=C,3=D. D not supported in ACTION_* enums; map D->C for now.
-            int b = buttonIdx;
-            if (b > 2) b = 2; // clamp D to C for normals
+        auto IsNormalAttackAction = [&](int action)->bool {
+            return GetPostureIndexForAction(action) >= 0
+                || action == ACTION_6A || action == ACTION_6B || action == ACTION_6C || action == ACTION_6D
+                || action == ACTION_4A || action == ACTION_4B || action == ACTION_4C || action == ACTION_4D;
+        };
+        auto ExtractNormalButtonIndex = [](int action, int fallback)->int {
+            switch (action) {
+                case ACTION_5A: case ACTION_2A: case ACTION_JA: case ACTION_6A: case ACTION_4A: return 0;
+                case ACTION_5B: case ACTION_2B: case ACTION_JB: case ACTION_6B: case ACTION_4B: return 1;
+                case ACTION_5C: case ACTION_2C: case ACTION_JC: case ACTION_6C: case ACTION_4C: return 2;
+                case ACTION_5D: case ACTION_2D: case ACTION_JD: case ACTION_6D: case ACTION_4D: return 3;
+                default: return fallback < 0 ? 0 : (fallback > 3 ? 3 : fallback);
+            }
+        };
+        auto IsSpecialMoveAction = [](int action)->bool {
+            switch (action) {
+                case ACTION_QCF: case ACTION_DP: case ACTION_QCB: case ACTION_421:
+                case ACTION_412: case ACTION_22:
+                case ACTION_SUPER1: case ACTION_SUPER2: case ACTION_236236: case ACTION_214214:
+                case ACTION_641236: case ACTION_463214: case ACTION_4123641236: case ACTION_6321463214:
+                    return true;
+                default: return false;
+            }
+        };
+        auto IsCatalogNormalGroup = [](int action)->bool {
+            return action >= ACTION_1X && action <= ACTION_664X;
+        };
+        auto ActionSupportsChargeFollowup = [&](int action)->bool {
+            if (action == ACTION_JUMP || action == ACTION_BACKDASH ||
+                action == ACTION_FORWARD_DASH || action == ACTION_BLOCK ||
+                action == ACTION_FINAL_MEMORY ||
+                action == ACTION_KAORI_RECOIL_DUCK || action == ACTION_66X ||
+                action == ACTION_662X || action == ACTION_664X) {
+                return false;
+            }
+            if (action >= ACTION_5A && action <= ACTION_4D) return true;
+            if (action == ACTION_1X || action == ACTION_3X ||
+                action == ACTION_J2X || action == ACTION_J6X) {
+                return true;
+            }
+            return IsSpecialMoveAction(action);
+        };
+        auto MapPostureAndButtonToAction = [](int postureIdx, int buttonIdx)->int {
+            buttonIdx = (buttonIdx < 0 ? 0 : (buttonIdx > 3 ? 3 : buttonIdx));
             switch (postureIdx) {
-                case 0: // Standing
-                    return b == 0 ? ACTION_5A : (b == 1 ? ACTION_5B : ACTION_5C);
-                case 1: // Crouching
-                    return b == 0 ? ACTION_2A : (b == 1 ? ACTION_2B : ACTION_2C);
-                case 2: // Jumping
-                    return b == 0 ? ACTION_JA : (b == 1 ? ACTION_JB : ACTION_JC);
-                default:
-                    return ACTION_5A;
+                case 0: return buttonIdx==0?ACTION_5A:(buttonIdx==1?ACTION_5B:(buttonIdx==2?ACTION_5C:ACTION_5D));
+                case 1: return buttonIdx==0?ACTION_2A:(buttonIdx==1?ACTION_2B:(buttonIdx==2?ACTION_2C:ACTION_2D));
+                case 2: return buttonIdx==0?ACTION_JA:(buttonIdx==1?ACTION_JB:(buttonIdx==2?ACTION_JC:ACTION_JD));
+                default: return ACTION_5A;
             }
         };
-        auto MapMotionIndexToAction = [](int motionIdx) -> int {
-            switch (motionIdx) {
-                case 3: return ACTION_QCF;             // 236
-                case 4: return ACTION_DP;              // 623
-                case 5: return ACTION_QCB;             // 214
-                case 6: return ACTION_421;             // 421
-                case 7: return ACTION_SUPER1;          // 41236
-                case 8: return ACTION_SUPER2;          // 214236 hybrid
-                case 9: return ACTION_236236;          // 236236
-                case 10: return ACTION_214214;         // 214214
-                case 11: return ACTION_641236;         // 641236
-                case 12: return ACTION_463214;         // 463214
-                case 13: return ACTION_412;            // 412
-                case 14: return ACTION_22;             // 22
-                case 15: return ACTION_4123641236;     // 4123641236
-                case 16: return ACTION_6321463214;     // 6321463214
-                case 17: return ACTION_JUMP;           // Jump
-                case 18: return ACTION_BACKDASH;       // Backdash
-                case 19: return ACTION_FORWARD_DASH;   // Forward Dash
-                case 20: return ACTION_BLOCK;          // Block
-                case 21: return ACTION_FINAL_MEMORY;   // Final Memory
-                case 22: return ACTION_6A; // default A for forward group (button selection remaps later)
-                case 23: return ACTION_4A; // default A for back group
-                default: return ACTION_5A; // For posture indices 0..2, action set later
+        auto MapMotionIndexToAction = [&](int idx, int buttonIdx = 0)->int {
+            buttonIdx = buttonIdx < 0 ? 0 : (buttonIdx > 3 ? 3 : buttonIdx);
+            switch (idx) {
+                case 17: return ACTION_JUMP; case 18: return ACTION_BACKDASH; case 19: return ACTION_FORWARD_DASH; case 20: return ACTION_BLOCK; case 21: return ACTION_FINAL_MEMORY;
+                case 3: return ACTION_QCF; case 4: return ACTION_DP; case 5: return ACTION_QCB; case 6: return ACTION_421; case 7: return ACTION_SUPER1;
+                case 8: return ACTION_SUPER2; case 9: return ACTION_236236; case 10: return ACTION_214214; case 11: return ACTION_641236; case 12: return ACTION_463214;
+                case 13: return ACTION_412; case 14: return ACTION_22; case 15: return ACTION_4123641236; case 16: return ACTION_6321463214;
+                case 22: return buttonIdx==0?ACTION_6A:(buttonIdx==1?ACTION_6B:(buttonIdx==2?ACTION_6C:ACTION_6D));
+                case 23: return buttonIdx==0?ACTION_4A:(buttonIdx==1?ACTION_4B:(buttonIdx==2?ACTION_4C:ACTION_4D));
+                case 24: return ACTION_1X; case 25: return ACTION_3X;
+                case 26: return ACTION_J2X; case 27: return ACTION_J6X;
+                case 28: return ACTION_66X; case 29: return ACTION_662X;
+                case 30: return ACTION_664X;
+                case 31: return ACTION_KAORI_RECOIL_DUCK;
+                default: return ACTION_5A; // for Standing/Crouching/Jumping, actual A/B/C chosen via Option column
             }
         };
-        
-        // Render each trigger's settings
-        for (int i = 0; i < IM_ARRAYSIZE(triggers); i++) {
-            ImGui::PushID(i);
-            
-            // Create a unique label for the checkbox
-            std::string checkboxLabel = std::string(triggers[i].name) + ":";
-            if (ImGui::Checkbox(checkboxLabel.c_str(), triggers[i].enabled)) {
-                // When enabling a trigger, make sure it's configured with reasonable defaults
-                if (*triggers[i].enabled) {
-                    if (*triggers[i].action < 0) *triggers[i].action = 0;
-                    if (*triggers[i].delay < 0) *triggers[i].delay = 0;
-                    if (*triggers[i].strength < 0) *triggers[i].strength = 0; // Default to Light (A)
+        auto GetMotionIndexForAction = [&](int action)->int {
+            switch (action) {
+                // Group normals
+                case ACTION_5A: case ACTION_5B: case ACTION_5C: case ACTION_5D: return 0;
+                case ACTION_2A: case ACTION_2B: case ACTION_2C: case ACTION_2D: return 1;
+                case ACTION_JA: case ACTION_JB: case ACTION_JC: case ACTION_JD: return 2;
+                // Forward/Back normals as separate groups (refined by Option)
+                case ACTION_6A: case ACTION_6B: case ACTION_6C: case ACTION_6D: return 22;
+                case ACTION_4A: case ACTION_4B: case ACTION_4C: case ACTION_4D: return 23;
+                // Specials/Supers/Others
+                case ACTION_QCF: return 3; case ACTION_DP: return 4; case ACTION_QCB: return 5; case ACTION_421: return 6; case ACTION_SUPER1: return 7;
+                case ACTION_SUPER2: return 8; case ACTION_236236: return 9; case ACTION_214214: return 10; case ACTION_641236: return 11; case ACTION_463214: return 12;
+                case ACTION_412: return 13; case ACTION_22: return 14; case ACTION_4123641236: return 15; case ACTION_6321463214: return 16;
+                case ACTION_JUMP: return 17; case ACTION_BACKDASH: return 18; case ACTION_FORWARD_DASH: return 19; case ACTION_BLOCK: return 20; case ACTION_FINAL_MEMORY: return 21;
+                case ACTION_1X: return 24; case ACTION_3X: return 25;
+                case ACTION_J2X: return 26; case ACTION_J6X: return 27;
+                case ACTION_66X: return 28; case ACTION_662X: return 29;
+                case ACTION_664X: return 30;
+                case ACTION_KAORI_RECOIL_DUCK: return 31;
+                default: return -1;
+            }
+        };
+        const int catalogTargetPlayer = ResolveAutoActionTargetPlayer();
+        const char* catalogTargetName = catalogTargetPlayer == 1
+            ? guiState.localData.p1CharName : guiState.localData.p2CharName;
+        const int catalogCharId = (!catalogTargetName || catalogTargetName[0] == '\0')
+            ? -1
+            : (catalogTargetPlayer == 1 ? guiState.localData.p1CharID
+                                        : guiState.localData.p2CharID);
+        auto MotionItemVisible = [&](const MotionItem& item)->bool {
+            if (item.categoryVariant == 1) return catalogCharId != CHAR_ID_KANO;
+            if (item.categoryVariant == 2) return catalogCharId == CHAR_ID_KANO;
+            return true;
+        };
+        auto MotionChoiceAvailable = [&](int motionIndex)->bool {
+            if (motionIndex >= 0 && motionIndex <= 2) return true;
+            if (motionIndex == 17 || motionIndex == 18 || motionIndex == 19 ||
+                motionIndex == 20) return true;
+            if (motionIndex == 22 || motionIndex == 23) {
+                const int first = motionIndex == 22 ? ACTION_6A : ACTION_4A;
+                for (int b = 0; b < 4; ++b) {
+                    if (CharacterActionCatalog::IsAvailable(catalogCharId, first + b, b)) return true;
                 }
+                return false;
             }
-            
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(actionComboWidth);
-            
-            // Determine current selection
-            int currentMotionIndex = (*triggers[i].macroSlot > 0) ? -2 : GetMotionIndexForAction(*triggers[i].action);
-            const char* currentLabel = (*triggers[i].macroSlot > 0) ? "Macro" : "Unknown";
-            if (currentMotionIndex >= 0) {
-                // Find label from categorized list
-                for (const auto& item : motionItemsWithCategories) {
-                    if (!item.isCategory && !item.isSeparator && item.motionIndex == currentMotionIndex) {
-                        currentLabel = item.label;
+            const int action = MapMotionIndexToAction(motionIndex, 0);
+            return CharacterActionCatalog::AnyAvailable(catalogCharId, action);
+        };
+        auto ButtonAvailable = [&](int action, int button)->bool {
+            button = (std::max)(0, (std::min)(button, 3));
+            if (action >= ACTION_5A && action <= ACTION_5D) {
+                return CharacterActionCatalog::IsAvailable(
+                    catalogCharId, ACTION_5A + button, button);
+            }
+            if (action >= ACTION_2A && action <= ACTION_2D) {
+                return CharacterActionCatalog::IsAvailable(
+                    catalogCharId, ACTION_2A + button, button);
+            }
+            if (action >= ACTION_JA && action <= ACTION_JD) {
+                return CharacterActionCatalog::IsAvailable(
+                    catalogCharId, ACTION_JA + button, button);
+            }
+            if (action >= ACTION_6A && action <= ACTION_6D) {
+                return CharacterActionCatalog::IsAvailable(catalogCharId, ACTION_6A + button, button);
+            }
+            if (action >= ACTION_4A && action <= ACTION_4D) {
+                return CharacterActionCatalog::IsAvailable(catalogCharId, ACTION_4A + button, button);
+            }
+            return CharacterActionCatalog::IsAvailable(catalogCharId, action, button);
+        };
+        auto AvailableButtonCombo = [&](const char* id, int action, int& button)->bool {
+            bool changed = false;
+            if (!ButtonAvailable(action, button)) {
+                for (int b = 0; b < 4; ++b) {
+                    if (ButtonAvailable(action, b)) {
+                        changed = button != b;
+                        button = b;
                         break;
                     }
                 }
             }
-            
-            // Custom combo with categories
-            bool selectionChanged = false;
-            int newMotionIndex = currentMotionIndex;
-            bool newMacroSelected = false;
-            
-            if (ImGui::BeginCombo("Action", currentLabel)) {
-                // Render categorized items
-                for (const auto& item : motionItemsWithCategories) {
-                    if (item.isCategory) {
-                        // Category header - colored, non-selectable
-                        ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "%s", item.label);
-                    } else if (item.isSeparator) {
-                        // Visual separator
-                        ImGui::Separator();
-                    } else {
-                        // Selectable item
-                        bool isSelected = (item.motionIndex == currentMotionIndex);
-                        if (ImGui::Selectable(item.label, isSelected)) {
-                            newMotionIndex = item.motionIndex;
-                            selectionChanged = true;
-                        }
-                        if (isSelected) {
-                            ImGui::SetItemDefaultFocus();
-                        }
+            const char* preview = buttonItems[(std::max)(0, (std::min)(button, 3))];
+            if (ImGui::BeginCombo(id, preview)) {
+                for (int b = 0; b < 4; ++b) {
+                    if (!ButtonAvailable(action, b)) continue;
+                    const bool selected = b == button;
+                    if (ImGui::Selectable(buttonItems[b], selected)) {
+                        button = b;
+                        changed = true;
                     }
+                    if (selected) ImGui::SetItemDefaultFocus();
                 }
-                
-                // Add Macro option at the end (no category)
-                ImGui::Separator();
-                bool isMacroSelected = (*triggers[i].macroSlot > 0);
-                if (ImGui::Selectable("Macro", isMacroSelected)) {
-                    newMacroSelected = true;
-                    selectionChanged = true;
-                }
-                if (isMacroSelected) {
-                    ImGui::SetItemDefaultFocus();
-                }
-                
                 ImGui::EndCombo();
             }
-            
-            // Handle selection changes
-            if (selectionChanged) {
-                if (newMacroSelected) {
-                    // Macro chosen: ensure we have a default slot if none selected yet
-                    int slots = MacroController::GetSlotCount();
-                    if (*triggers[i].macroSlot == 0 && slots > 0) {
-                        *triggers[i].macroSlot = 1;
+            return changed;
+        };
+        // (quick summary and bulk utilities removed per user feedback)
+
+    // Use default item spacing
+
+        // Render as a table for clarity
+        ImGuiTableFlags tflags = ImGuiTableFlags_Borders | ImGuiTableFlags_SizingStretchProp;
+        if (ImGui::BeginTable("auto_triggers", 7, tflags)) {
+            const float onColW = ImGui::GetFrameHeight() + _style.CellPadding.x * 1.5f; // roughly checkbox size
+            const float actionColW = actionComboWidth + _style.CellPadding.x * 2.0f;    // match combo width
+            const float delayColW = 80.0f;                                              // small, like our input width
+
+            ImGui::TableSetupColumn("On", ImGuiTableColumnFlags_WidthFixed, onColW);
+            ImGui::TableSetupColumn("Trigger", ImGuiTableColumnFlags_WidthFixed, 110.0f);
+            ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthFixed, actionColW);
+            ImGui::TableSetupColumn("Button", ImGuiTableColumnFlags_WidthFixed, 140.0f);
+            ImGui::TableSetupColumn("Delay", ImGuiTableColumnFlags_WidthFixed, delayColW);
+            ImGui::TableSetupColumn("After Move", ImGuiTableColumnFlags_WidthFixed, 105.0f);
+            ImGui::TableSetupColumn("More", ImGuiTableColumnFlags_WidthFixed, 140.0f);
+            ImGui::TableHeadersRow();
+
+            for (int i = 0; i < IM_ARRAYSIZE(triggers); i++) {
+                ImGui::PushID(i);
+                ImGui::TableNextRow();
+
+                // Column: On
+                ImGui::TableNextColumn();
+                {
+                    // Center the checkbox horizontally in the narrow 'On' column
+                    float colW = ImGui::GetColumnWidth();
+                    float itemW = ImGui::GetFrameHeight(); // approximate checkbox width
+                    float x0 = ImGui::GetCursorPosX();
+                    float xCentered = x0 + (colW - itemW) * 0.5f;
+                    // Avoid drifting into next column padding
+                    ImGui::SetCursorPosX((xCentered > x0) ? xCentered : x0);
+                    ImGui::Checkbox("##on", triggers[i].enabled);
+                }
+
+                // Column: Trigger name
+                ImGui::TableNextColumn();
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextUnformatted(triggers[i].name);
+
+                // Column: Action combo with categories (+ Multi selection popup)
+                ImGui::TableNextColumn();
+                ImGui::SetNextItemWidth(actionComboWidth);
+                int currentMotionIndex = (*triggers[i].macroSlot > 0) ? -2 : GetMotionIndexForAction(*triggers[i].action);
+                // If multi-pool enabled and has selections, show Random(n) label
+                auto availablePoolCount = [&](uint32_t m){
+                    int c = 0;
+                    for (int bit = 0; bit < 24; ++bit) {
+                        if ((m & (1u << bit)) && MotionChoiceAvailable(bit)) ++c;
                     }
+                    return c;
+                };
+                int selectedCount = (*triggers[i].usePool)
+                    ? availablePoolCount(*triggers[i].poolMask) : 0;
+                const char* currentLabel = nullptr;
+                char randomLabel[32];
+                if (selectedCount > 0) {
+                    snprintf(randomLabel, sizeof(randomLabel), "Random (%d)", selectedCount);
+                    currentLabel = randomLabel;
                 } else {
-                    // Non-macro: clear macro and set action
-                    *triggers[i].macroSlot = 0;
-                    if (newMotionIndex <= 2) {
-                        // Posture selected: use current button choice to pick specific normal
-                        int currentButtonIdx = 0;
-                        if (IsNormalAttackAction(*triggers[i].action)) {
-                            switch (*triggers[i].action) {
-                                case ACTION_5A: case ACTION_2A: case ACTION_JA: currentButtonIdx = 0; break;
-                                case ACTION_5B: case ACTION_2B: case ACTION_JB: currentButtonIdx = 1; break;
-                                case ACTION_5C: case ACTION_2C: case ACTION_JC: currentButtonIdx = 2; break;
-                                default: currentButtonIdx = 0; break;
-                            }
-                        } else {
-                            currentButtonIdx = *triggers[i].strength; // reuse strength slot
+                    currentLabel = (*triggers[i].macroSlot > 0) ? "Macro" : "Unknown";
+                }
+                if (selectedCount == 0 && currentMotionIndex >= 0) {
+                    for (const auto& item : motionItemsWithCategories) {
+                        if (MotionItemVisible(item) && !item.isCategory &&
+                            !item.isSeparator && item.motionIndex == currentMotionIndex) {
+                            currentLabel = item.label;
+                            break;
                         }
-                        *triggers[i].action = MapPostureAndButtonToAction(newMotionIndex, currentButtonIdx);
-                    } else {
-                        *triggers[i].action = MapMotionIndexToAction(newMotionIndex);
                     }
                 }
+                bool selectionChanged = false; int newMotionIndex = currentMotionIndex; bool newMacroSelected = false;
+                if (ImGui::BeginCombo("##Action", currentLabel)) {
+                    for (const auto& item : motionItemsWithCategories) {
+                        if (!MotionItemVisible(item)) continue;
+                        if (item.isCategory) {
+                            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "%s", item.label);
+                        } else if (item.isSeparator) {
+                            ImGui::Separator();
+                        } else {
+                            if (!MotionChoiceAvailable(item.motionIndex)) continue;
+                            bool isSelected = (item.motionIndex == currentMotionIndex);
+                            if (ImGui::Selectable(item.label, isSelected)) { newMotionIndex = item.motionIndex; selectionChanged = true; }
+                            if (isSelected) ImGui::SetItemDefaultFocus();
+                        }
+                    }
+                    ImGui::Separator();
+                    bool isMacroSelected = (*triggers[i].macroSlot > 0);
+                    if (ImGui::Selectable("Macro", isMacroSelected)) { newMacroSelected = true; selectionChanged = true; }
+                    if (isMacroSelected) ImGui::SetItemDefaultFocus();
+                    ImGui::EndCombo();
+                }
+                if (selectionChanged) {
+                    if (newMacroSelected) {
+                        int slots = MacroController::GetSlotCount(); if (*triggers[i].macroSlot == 0 && slots > 0) { *triggers[i].macroSlot = 1; }
+                    } else {
+                        *triggers[i].macroSlot = 0;
+                        if (newMotionIndex <= 2) {
+                            int currentButtonIdx = IsNormalAttackAction(*triggers[i].action)
+                                ? ExtractNormalButtonIndex(*triggers[i].action, *triggers[i].strength)
+                                : *triggers[i].strength;
+                            *triggers[i].action = MapPostureAndButtonToAction(newMotionIndex, currentButtonIdx);
+                        } else {
+                            const int currentButtonIdx = ExtractNormalButtonIndex(
+                                *triggers[i].action, *triggers[i].strength);
+                            *triggers[i].action = MapMotionIndexToAction(newMotionIndex, currentButtonIdx);
+                        }
+                    }
+                }
+
+                // (Multi/Rows controls moved to the 'More' column)
+
+                // Column: Option (button/macro slot/dash follow-up)
+                ImGui::TableNextColumn();
+                ImGui::SetNextItemWidth(140);
+                int buttonIdx = 0; int postureIdx = GetPostureIndexForAction(*triggers[i].action); bool macroSelected = (*triggers[i].macroSlot > 0);
+                if (macroSelected) {
+                    int slots = MacroController::GetSlotCount(); int zeroBased = (*triggers[i].macroSlot > 0) ? (*triggers[i].macroSlot - 1) : 0;
+                    std::vector<std::string> labels; labels.reserve((size_t)slots);
+                    for (int s = 1; s <= slots; ++s) labels.emplace_back(std::string("Slot ") + std::to_string(s));
+                    std::vector<const char*> citems; citems.reserve(labels.size()); for (auto &s : labels) citems.push_back(s.c_str());
+                    if (slots <= 0) { ImGui::BeginDisabled(); int dummy = 0; ImGui::Combo("##MacroSlot", &dummy, (const char* const*)nullptr, 0); ImGui::EndDisabled(); }
+                    else { if (ImGui::Combo("##MacroSlot", &zeroBased, citems.data(), (int)citems.size())) { *triggers[i].macroSlot = zeroBased + 1; } }
+                } else if (*triggers[i].action == ACTION_JUMP) {
+                    const char* dirItems[] = { "Neutral", "Forward", "Backwards" }; int dir = *triggers[i].strength;
+                    if (ImGui::Combo("##JumpDir", &dir, dirItems, IM_ARRAYSIZE(dirItems))) { *triggers[i].strength = (dir < 0 ? 0 : (dir > 2 ? 2 : dir)); }
+                } else if (*triggers[i].action == ACTION_BACKDASH ||
+                           *triggers[i].action == ACTION_KAORI_RECOIL_DUCK) {
+                    ImGui::TextDisabled("(none)");
+                } else if (*triggers[i].action == ACTION_FORWARD_DASH) {
+                    int fdf = forwardDashFollowup.load(); const char* fdItems[] = { "No Follow-up", "A", "B", "C", "2A", "2B", "2C" };
+                    if (ImGui::Combo("##FDFollow", &fdf, fdItems, IM_ARRAYSIZE(fdItems))) { if (fdf < 0) fdf = 0; if (fdf > 6) fdf = 6; forwardDashFollowup.store(fdf); }
+                    ImGui::SameLine(); bool dashMode = forwardDashFollowupDashMode.load(); if (ImGui::Checkbox("DashAtk", &dashMode)) { forwardDashFollowupDashMode.store(dashMode); }
+                } else if (postureIdx >= 0) {
+                    switch (*triggers[i].action) { case ACTION_5A: case ACTION_2A: case ACTION_JA: buttonIdx = 0; break; case ACTION_5B: case ACTION_2B: case ACTION_JB: buttonIdx = 1; break; case ACTION_5C: case ACTION_2C: case ACTION_JC: buttonIdx = 2; break; case ACTION_5D: case ACTION_2D: case ACTION_JD: buttonIdx = 3; break; default: buttonIdx = 0; break; }
+                    if (AvailableButtonCombo("##Btn", *triggers[i].action, buttonIdx)) { *triggers[i].action = MapPostureAndButtonToAction(postureIdx, buttonIdx); *triggers[i].strength = buttonIdx; }
+                } else if (IsSpecialMoveAction(*triggers[i].action)) {
+                    buttonIdx = *triggers[i].strength; if (AvailableButtonCombo("##Str", *triggers[i].action, buttonIdx)) { *triggers[i].strength = buttonIdx; }
+                } else if (GetMotionIndexForAction(*triggers[i].action) == 22 || GetMotionIndexForAction(*triggers[i].action) == 23) {
+                    int groupIndex = GetMotionIndexForAction(*triggers[i].action);
+                    switch (*triggers[i].action) { case ACTION_6A: case ACTION_4A: buttonIdx = 0; break; case ACTION_6B: case ACTION_4B: buttonIdx = 1; break; case ACTION_6C: case ACTION_4C: buttonIdx = 2; break; case ACTION_6D: case ACTION_4D: buttonIdx = 3; break; default: buttonIdx = 0; break; }
+                    if (AvailableButtonCombo("##FwdBackBtn", *triggers[i].action, buttonIdx)) {
+                        if (groupIndex == 22) { *triggers[i].action = (buttonIdx==0)?ACTION_6A:(buttonIdx==1)?ACTION_6B:(buttonIdx==2)?ACTION_6C:ACTION_6D; }
+                        else { *triggers[i].action = (buttonIdx==0)?ACTION_4A:(buttonIdx==1)?ACTION_4B:(buttonIdx==2)?ACTION_4C:ACTION_4D; }
+                    }
+                } else if (IsCatalogNormalGroup(*triggers[i].action)) {
+                    buttonIdx = *triggers[i].strength;
+                    if (AvailableButtonCombo("##CatalogBtn", *triggers[i].action, buttonIdx)) {
+                        *triggers[i].strength = buttonIdx;
+                    }
+                } else {
+                    buttonIdx = *triggers[i].strength; if (*triggers[i].action != ACTION_BLOCK) { if (ImGui::Combo("##OtherBtn", &buttonIdx, buttonItems, IM_ARRAYSIZE(buttonItems))) { *triggers[i].strength = (buttonIdx > 3) ? 3 : buttonIdx; } }
+                }
+
+                // Column: Delay
+                ImGui::TableNextColumn(); ImGui::SetNextItemWidth(70);
+                int delayValue = *triggers[i].delay; if (ImGui::InputInt("##Delay", &delayValue, 1, 5)) { *triggers[i].delay = (std::max)(0, delayValue); }
+
+                // Column: optional native Instant Charge follow-up.
+                ImGui::TableNextColumn(); ImGui::SetNextItemWidth(100);
+                {
+                    const char* chargeItems[] = { "Off", "IC", "FIC" };
+                    const bool chargeEligible = *triggers[i].macroSlot == 0 &&
+                        ActionSupportsChargeFollowup(*triggers[i].action);
+                    if (!chargeEligible) *triggers[i].chargeFollowup = 0;
+                    if (!chargeEligible) ImGui::BeginDisabled();
+                    int charge = (std::max)(0, (std::min)(*triggers[i].chargeFollowup, 2));
+                    if (ImGui::Combo("##Charge", &charge, chargeItems, IM_ARRAYSIZE(chargeItems))) {
+                        *triggers[i].chargeFollowup = charge;
+                    }
+                    if (!chargeEligible) ImGui::EndDisabled();
+                }
+
+                // Column: More (Row controls)
+                ImGui::TableNextColumn();
+                {
+                    // '+' quick-add for rows
+                    if (ImGui::SmallButton("+")) {
+                        int* optCount = nullptr; TriggerOption* opts = nullptr; const int maxOpts = MAX_TRIGGER_OPTIONS;
+                        if (i == 0) { optCount = &guiState.localData.afterBlockOptionCount; opts = guiState.localData.afterBlockOptions; }
+                        else if (i == 1) { optCount = &guiState.localData.onWakeupOptionCount; opts = guiState.localData.onWakeupOptions; }
+                        else if (i == 2) { optCount = &guiState.localData.afterHitstunOptionCount; opts = guiState.localData.afterHitstunOptions; }
+                        else if (i == 3) { optCount = &guiState.localData.afterAirtechOptionCount; opts = guiState.localData.afterAirtechOptions; }
+                        else if (i == 4) { optCount = &guiState.localData.onRGOptionCount; opts = guiState.localData.onRGOptions; }
+                        if (optCount && opts && *optCount < maxOpts) {
+                            TriggerOption def{ true, ACTION_5A, 0, 0, (int)BASE_ATTACK_5A, 0, 0 };
+                            if (i == 3) def.action = ACTION_JA; // Airtech default JA
+                            opts[*optCount] = def; (*optCount)++;
+                        }
+                    }
+                }
+
+                // Inline rows: render per-trigger option entries under the main row
+                int* optCount = nullptr; TriggerOption* opts = nullptr; const int maxOpts = MAX_TRIGGER_OPTIONS;
+                if (i == 0) { optCount = &guiState.localData.afterBlockOptionCount; opts = guiState.localData.afterBlockOptions; }
+                else if (i == 1) { optCount = &guiState.localData.onWakeupOptionCount; opts = guiState.localData.onWakeupOptions; }
+                else if (i == 2) { optCount = &guiState.localData.afterHitstunOptionCount; opts = guiState.localData.afterHitstunOptions; }
+                else if (i == 3) { optCount = &guiState.localData.afterAirtechOptionCount; opts = guiState.localData.afterAirtechOptions; }
+                else if (i == 4) { optCount = &guiState.localData.onRGOptionCount; opts = guiState.localData.onRGOptions; }
+
+                for (int r = 0; optCount && opts && r < *optCount; ++r) {
+                    ImGui::TableNextRow();
+                    // On column: empty (no checkbox)
+                    ImGui::TableNextColumn(); ImGui::TextUnformatted("");
+                    // Trigger name column: show numbered variant, e.g. "After Block (2)"
+                    ImGui::TableNextColumn();
+                    {
+                        ImGui::AlignTextToFramePadding();
+                        char label[128];
+                        snprintf(label, sizeof(label), "%s (%d)", triggers[i].name, r + 2);
+                        ImGui::TextUnformatted(label);
+                    }
+                    // Action column: action combo only (no enable checkbox)
+                    ImGui::TableNextColumn();
+                    ImGui::PushID(r);
+                    int rowMotionIndex = (opts[r].macroSlot > 0) ? -2 : GetMotionIndexForAction(opts[r].action);
+                    const char* rowLabel = nullptr;
+                    if (rowMotionIndex >= 0) {
+                        for (const auto& it : motionItemsWithCategories) {
+                            if (MotionItemVisible(it) && !it.isCategory &&
+                                !it.isSeparator && it.motionIndex == rowMotionIndex) {
+                                rowLabel = it.label;
+                                break;
+                            }
+                        }
+                    } else { rowLabel = (opts[r].macroSlot > 0) ? "Macro" : "Unknown"; }
+                    ImGui::SetNextItemWidth(actionComboWidth);
+                    bool selChanged = false; int newIdx = rowMotionIndex; bool macroPicked = false;
+                    if (ImGui::BeginCombo("##rowAction", rowLabel)) {
+                        for (const auto& item : motionItemsWithCategories) {
+                            if (!MotionItemVisible(item)) continue;
+                            if (item.isCategory) ImGui::TextColored(ImVec4(0.7f,0.9f,1.0f,1.0f), "%s", item.label);
+                            else if (item.isSeparator) ImGui::Separator();
+                            else {
+                                if (!MotionChoiceAvailable(item.motionIndex)) continue;
+                                bool isSel = (item.motionIndex == rowMotionIndex);
+                                if (ImGui::Selectable(item.label, isSel)) { newIdx = item.motionIndex; selChanged = true; }
+                                if (isSel) ImGui::SetItemDefaultFocus();
+                            }
+                        }
+                        ImGui::Separator();
+                        bool isMacro = (opts[r].macroSlot > 0);
+                        if (ImGui::Selectable("Macro", isMacro)) { macroPicked = true; selChanged = true; }
+                        if (isMacro) ImGui::SetItemDefaultFocus();
+                        ImGui::EndCombo();
+                    }
+                    if (selChanged) {
+                        if (macroPicked) {
+                            int slots = MacroController::GetSlotCount(); if (opts[r].macroSlot == 0 && slots > 0) opts[r].macroSlot = 1;
+                        } else {
+                            opts[r].macroSlot = 0;
+                            const int btnIdx = ExtractNormalButtonIndex(opts[r].action, opts[r].strength);
+                            if (newIdx <= 2) {
+                                opts[r].action = MapPostureAndButtonToAction(newIdx, btnIdx);
+                            } else {
+                                opts[r].action = MapMotionIndexToAction(newIdx, btnIdx);
+                            }
+                            if (IsNormalAttackAction(opts[r].action)) opts[r].strength = btnIdx;
+                        }
+                    }
+                    // Button column
+                    ImGui::TableNextColumn();
+                    ImGui::SetNextItemWidth(140);
+                    if (opts[r].macroSlot > 0) {
+                        int slots = MacroController::GetSlotCount(); int zeroB = (opts[r].macroSlot>0)?(opts[r].macroSlot-1):0;
+                        std::vector<std::string> labels; labels.reserve((size_t)slots);
+                        for (int s=1;s<=slots;++s) labels.emplace_back(std::string("Slot ")+std::to_string(s));
+                        std::vector<const char*> citems; citems.reserve(labels.size()); for (auto &s : labels) citems.push_back(s.c_str());
+                        if (slots <= 0) { ImGui::BeginDisabled(); int dummy=0; ImGui::Combo("##rowMac", &dummy, (const char* const*)nullptr, 0); ImGui::EndDisabled(); }
+                        else { if (ImGui::Combo("##rowMac", &zeroB, citems.data(), (int)citems.size())) { opts[r].macroSlot = zeroB + 1; } }
+                    } else if (opts[r].action == ACTION_JUMP) {
+                        const char* dirItems[] = { "Neutral", "Forward", "Backwards" }; int dir = opts[r].strength;
+                        if (ImGui::Combo("##rowJump", &dir, dirItems, IM_ARRAYSIZE(dirItems))) { opts[r].strength = (dir<0?0:(dir>2?2:dir)); }
+                    } else if (IsNormalAttackAction(opts[r].action)) {
+                        int postIdx = GetPostureIndexForAction(opts[r].action);
+                        int b = 0; switch (opts[r].action) { case ACTION_5A: case ACTION_2A: case ACTION_JA: case ACTION_6A: case ACTION_4A: b=0; break; case ACTION_5B: case ACTION_2B: case ACTION_JB: case ACTION_6B: case ACTION_4B: b=1; break; case ACTION_5C: case ACTION_2C: case ACTION_JC: case ACTION_6C: case ACTION_4C: b=2; break; case ACTION_5D: case ACTION_2D: case ACTION_JD: case ACTION_6D: case ACTION_4D: b=3; break; default: b=0; break; }
+                        if (AvailableButtonCombo("##rowBtn", opts[r].action, b)) {
+                            if (postIdx == 0) opts[r].action = (b==0?ACTION_5A:(b==1?ACTION_5B:(b==2?ACTION_5C:ACTION_5D)));
+                            else if (postIdx == 1) opts[r].action = (b==0?ACTION_2A:(b==1?ACTION_2B:(b==2?ACTION_2C:ACTION_2D)));
+                            else if (postIdx == 2) opts[r].action = (b==0?ACTION_JA:(b==1?ACTION_JB:(b==2?ACTION_JC:ACTION_JD)));
+                            else {
+                                int groupIndex = GetMotionIndexForAction(opts[r].action);
+                                if (groupIndex == 22) opts[r].action = (b==0?ACTION_6A:(b==1?ACTION_6B:(b==2?ACTION_6C:ACTION_6D)));
+                                else if (groupIndex == 23) opts[r].action = (b==0?ACTION_4A:(b==1?ACTION_4B:(b==2?ACTION_4C:ACTION_4D)));
+                            }
+                            opts[r].strength = b;
+                        }
+                    } else if (IsSpecialMoveAction(opts[r].action)) {
+                        int b = opts[r].strength; if (AvailableButtonCombo("##rowStr", opts[r].action, b)) { opts[r].strength = b; }
+                    } else if (IsCatalogNormalGroup(opts[r].action)) {
+                        int b = opts[r].strength;
+                        if (AvailableButtonCombo("##rowCatalog", opts[r].action, b)) opts[r].strength = b;
+                    } else { ImGui::TextDisabled("(none)"); }
+
+                    // Delay column
+                    ImGui::TableNextColumn(); ImGui::SetNextItemWidth(70);
+                    int d = opts[r].delay; if (ImGui::InputInt("##rowDelay", &d, 1, 5)) { opts[r].delay = (std::max)(0, d); }
+
+                    // After Move column
+                    ImGui::TableNextColumn(); ImGui::SetNextItemWidth(100);
+                    {
+                        const char* chargeItems[] = { "Off", "IC", "FIC" };
+                        const bool chargeEligible = opts[r].macroSlot == 0 &&
+                            ActionSupportsChargeFollowup(opts[r].action);
+                        if (!chargeEligible) opts[r].chargeFollowup = 0;
+                        if (!chargeEligible) ImGui::BeginDisabled();
+                        int charge = (std::max)(0, (std::min)(opts[r].chargeFollowup, 2));
+                        if (ImGui::Combo("##rowCharge", &charge, chargeItems, IM_ARRAYSIZE(chargeItems))) {
+                            opts[r].chargeFollowup = charge;
+                        }
+                        if (!chargeEligible) ImGui::EndDisabled();
+                    }
+
+                    // More column: remove
+                    ImGui::TableNextColumn();
+                    if (ImGui::SmallButton("X")) {
+                        for (int k=r+1; k<*optCount; ++k) opts[k-1] = opts[k];
+                        (*optCount)--; ImGui::PopID();
+                        // Skip rendering of the rest since data shifted
+                        break;
+                    }
+                    ImGui::PopID();
+                }
+
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+
+    // end default spacing scope
+
+                ImGui::EndTabItem();
             }
 
-            // Separate Button/Direction combo: for Jump show Forward/Neutral/Backwards; hide for Dashes
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(90);
-            int buttonIdx = 0;
-            int postureIdx = GetPostureIndexForAction(*triggers[i].action);
-            bool macroSelected = (*triggers[i].macroSlot > 0);
-            if (macroSelected) {
-                // Render slot selector instead of button/direction
-                int slots = MacroController::GetSlotCount();
-                int zeroBased = (*triggers[i].macroSlot > 0) ? (*triggers[i].macroSlot - 1) : 0;
-                // Build simple labels: Slot 1..N
-                std::vector<std::string> labels; labels.reserve((size_t)slots);
-                for (int s = 1; s <= slots; ++s) labels.emplace_back(std::string("Slot ") + std::to_string(s));
-                std::vector<const char*> citems; citems.reserve(labels.size());
-                for (auto &s : labels) citems.push_back(s.c_str());
-                ImGui::TextUnformatted("Slot");
+            // Macros sub-tab (moved from main tab bar)
+            ImGuiTabItemFlags _setMacros = (rq2 == 1) ? ImGuiTabItemFlags_SetSelected : 0;
+            if (ImGui::BeginTabItem("Macros", nullptr, _setMacros)) {
+                bool enteringMacros = !s_macrosActivePrev;
+                macrosActiveThisFrame = true;
+                guiState.autoActionSubTab = 1;
+                const auto& cfg = Config::GetSettings();
+                ImGui::SeparatorText("Macro Controller");
+                ImGui::Text("State: %s", MacroController::GetStatusLine().c_str());
+                ImGui::Text("Current Slot: %d / %d", MacroController::GetCurrentSlot(), MacroController::GetSlotCount());
+                bool empty = MacroController::IsSlotEmpty(MacroController::GetCurrentSlot());
+                ImGui::Text("Slot Empty: %s", empty ? "Yes" : "No");
+                // Debug stats for validation
+                /*{
+                    auto stats = MacroController::GetSlotStats(MacroController::GetCurrentSlot());
+                    ImGui::SeparatorText("Slot Stats");
+                    ImGui::BulletText("Spans: %d", stats.spanCount);
+                    ImGui::BulletText("Total Ticks: %d (~%.2fs)", stats.totalTicks, stats.totalTicks / 64.0f);
+                    ImGui::BulletText("Buffer Entries: %d", stats.bufEntries);
+                    ImGui::BulletText("Buf Idx Start: %u", (unsigned)stats.bufStartIdx);
+                    ImGui::BulletText("Buf Idx End: %u", (unsigned)stats.bufEndIdx);
+                    ImGui::BulletText("Has Data: %s", stats.hasData ? "Yes" : "No");
+                }*/
+                if (ImGui::Button("Toggle Record")) { MacroController::ToggleRecord(); }
                 ImGui::SameLine();
-                ImGui::SetNextItemWidth(110);
-                if (slots <= 0) {
-                    ImGui::BeginDisabled();
-                    int dummy = 0; ImGui::Combo("##MacroSlot", &dummy, (const char* const*)nullptr, 0);
-                    ImGui::EndDisabled();
-                } else {
-                    if (ImGui::Combo("##MacroSlot", &zeroBased, citems.data(), (int)citems.size())) {
-                        *triggers[i].macroSlot = zeroBased + 1;
+                if (ImGui::Button("Play")) { MacroController::Play(); }
+                ImGui::SameLine();
+                if (ImGui::Button("Stop")) { MacroController::Stop(); }
+                if (ImGui::Button("Prev Slot")) { MacroController::PrevSlot(); }
+                ImGui::SameLine();
+                if (ImGui::Button("Next Slot")) { MacroController::NextSlot(); }
+                ImGui::Spacing();
+                // Serialized editor + history
+                static bool s_includeBuffers = true;
+                static int s_lastSlot = -1;
+                static bool s_lastInclude = true;
+                static std::string s_macroText;
+                static std::vector<char> s_textBuf; // large buffer for editing
+                static std::string s_applyError;
+                static std::vector<std::string> s_undoStack;
+                static std::vector<std::string> s_redoStack;
+                static std::string s_prevText; // last committed text for change detection
+                static bool s_forceReload = false;
+                static bool s_editMode = false; // edit/display toggle for macro editor
+                auto ensureBufferFromText = [&](const std::string& txt){
+                    const size_t minCap = 8192; // 8KB editing space
+                    size_t cap = (txt.size() + 1024 > minCap) ? (txt.size() + 1024) : minCap;
+                    s_textBuf.assign(cap, '\0');
+                    if (!txt.empty()) memcpy(s_textBuf.data(), txt.data(), txt.size());
+                };
+                int curSlot = MacroController::GetCurrentSlot();
+                if (enteringMacros) s_forceReload = true;
+                // Reload text when slot changes or includeBuffers toggles
+                if (s_forceReload || s_lastSlot != curSlot || s_lastInclude != s_includeBuffers) {
+                    s_macroText = MacroController::SerializeSlot(curSlot, s_includeBuffers);
+                    ensureBufferFromText(s_macroText);
+                    s_undoStack.clear(); s_redoStack.clear(); s_prevText = s_macroText; s_applyError.clear();
+                    s_lastSlot = curSlot; s_lastInclude = s_includeBuffers;
+                    s_forceReload = false;
+                }
+                ImGui::SeparatorText("Serialized Macro");
+                ImGui::Checkbox("Include Buffers", &s_includeBuffers);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Reload from Slot")) {
+                    s_macroText = MacroController::SerializeSlot(curSlot, s_includeBuffers);
+                    ensureBufferFromText(s_macroText);
+                    s_undoStack.clear(); s_redoStack.clear(); s_prevText = s_macroText; s_applyError.clear();
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Prev Slot##serialized")) {
+                    MacroController::PrevSlot();
+                    // Force refresh and leave edit mode so the new slot shows immediately
+                    s_forceReload = true;
+                    s_editMode = false;
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Next Slot##serialized")) {
+                    MacroController::NextSlot();
+                    // Force refresh and leave edit mode so the new slot shows immediately
+                    s_forceReload = true;
+                    s_editMode = false;
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Apply to Slot")) {
+                    std::string err;
+                    // Get text from buffer and clean up newlines/spaces
+                    std::string textToApply = s_textBuf.data();
+                    
+                    // Remove newlines and collapse multiple spaces into single spaces
+                    std::string cleaned;
+                    bool prevWasSpace = false;
+                    for (char c : textToApply) {
+                        if (c == '\n' || c == '\r') {
+                            // Convert newlines to spaces
+                            if (!prevWasSpace && !cleaned.empty()) {
+                                cleaned += ' ';
+                                prevWasSpace = true;
+                            }
+                        } else if (c == ' ') {
+                            if (!prevWasSpace) {
+                                cleaned += ' ';
+                                prevWasSpace = true;
+                            }
+                        } else {
+                            cleaned += c;
+                            prevWasSpace = false;
+                        }
                     }
-                }
-            } else if (*triggers[i].action == ACTION_JUMP) {
-                // Use strength field as direction selector for Jump
-                const char* dirItems[] = { "Neutral", "Forward", "Backwards" };
-                int dir = *triggers[i].strength;
-                if (ImGui::Combo("", &dir, dirItems, IM_ARRAYSIZE(dirItems))) {
-                    *triggers[i].strength = (dir < 0 ? 0 : (dir > 2 ? 2 : dir));
-                }
-            } else if (*triggers[i].action == ACTION_BACKDASH) {
-                // Hide button combo for backdash
-                ImGui::Dummy(ImVec2(90, 0));
-            } else if (*triggers[i].action == ACTION_FORWARD_DASH) {
-                // Forward dash follow-up options (no dummy needed)
-                ImGui::SetNextItemWidth(150);
-                int fdf = forwardDashFollowup.load();
-                const char* fdItems[] = { "No Follow-up", "5A", "5B", "5C", "2A", "2B", "2C" };
-                if (ImGui::Combo("##FDFollow", &fdf, fdItems, IM_ARRAYSIZE(fdItems))) {
-                    if (fdf < 0) fdf = 0; if (fdf > 6) fdf = 6; forwardDashFollowup.store(fdf);
-                }
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Choose an optional normal to press as soon as the dash is actionable.\nSupports 5A/B/C and 2A/B/C.");
-                }
-                ImGui::SameLine();
-                bool dashMode = forwardDashFollowupDashMode.load();
-                if (ImGui::Checkbox("DashAtk", &dashMode)) {
-                    forwardDashFollowupDashMode.store(dashMode);
-                }
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("On: inject during dash (dash normal timing). Off: press after the dash ends.");
-                }
-            } else if (postureIdx >= 0) {
-                // Derive button from current normal action
-                switch (*triggers[i].action) {
-                    case ACTION_5A: case ACTION_2A: case ACTION_JA: buttonIdx = 0; break;
-                    case ACTION_5B: case ACTION_2B: case ACTION_JB: buttonIdx = 1; break;
-                    case ACTION_5C: case ACTION_2C: case ACTION_JC: buttonIdx = 2; break;
-                    default: buttonIdx = 0; break;
-                }
-                if (ImGui::Combo("", &buttonIdx, buttonItems, IM_ARRAYSIZE(buttonItems))) {//Delay
-                    // Update to specific normal based on posture + button
-                    *triggers[i].action = MapPostureAndButtonToAction(postureIdx, buttonIdx);
-                }
-                // Skip the generic handler below
-                ImGui::PopID();
-                ImGui::PushID(i);
-            } else if (IsSpecialMoveAction(*triggers[i].action)) {
-                // For specials, use strength value as button index (A/B/C). D will be clamped.
-                buttonIdx = *triggers[i].strength;
-                if (ImGui::Combo("", &buttonIdx, buttonItems, IM_ARRAYSIZE(buttonItems))) {//Delay
-                    *triggers[i].strength = (buttonIdx > 2) ? 2 : buttonIdx;
-                }
-            } else if (GetMotionIndexForAction(*triggers[i].action) == 22 || GetMotionIndexForAction(*triggers[i].action) == 23) {
-                // Forward / Back Normal group: map button selection to 6A/B/C or 4A/B/C
-                int groupIndex = GetMotionIndexForAction(*triggers[i].action); // 22 forward, 23 back
-                // Derive current button
-                switch (*triggers[i].action) {
-                    case ACTION_6A: case ACTION_4A: buttonIdx = 0; break;
-                    case ACTION_6B: case ACTION_4B: buttonIdx = 1; break;
-                    case ACTION_6C: case ACTION_4C: buttonIdx = 2; break;
-                    default: buttonIdx = 0; break;
-                }
-                if (ImGui::Combo("", &buttonIdx, buttonItems, 3)) {
-                    if (groupIndex == 22) {
-                        *triggers[i].action = (buttonIdx==0)?ACTION_6A:(buttonIdx==1)?ACTION_6B:ACTION_6C;
+                    
+                    if (!MacroController::DeserializeSlot(curSlot, cleaned, err)) {
+                        s_applyError = err;
                     } else {
-                        *triggers[i].action = (buttonIdx==0)?ACTION_4A:(buttonIdx==1)?ACTION_4B:ACTION_4C;
+                        s_applyError.clear();
+                        // Refresh serialized text from parsed slot for canonical formatting
+                        s_macroText = MacroController::SerializeSlot(curSlot, s_includeBuffers);
+                        ensureBufferFromText(s_macroText);
+                        s_undoStack.clear(); s_redoStack.clear(); s_prevText = s_macroText;
+                        DirectDrawHook::AddMessage("Applied macro to slot", "MACRO", RGB(180,255,180), 1000, 0, 120);
                     }
                 }
-            } else {
-                // For other actions (jump, dash, block, custom), keep buttonIdx but it won't affect action
-                buttonIdx = *triggers[i].strength;
-                if (*triggers[i].action != ACTION_BLOCK) {
-                    if (ImGui::Combo("", &buttonIdx, buttonItems, IM_ARRAYSIZE(buttonItems))) {//Delay
-                        *triggers[i].strength = (buttonIdx > 2) ? 2 : buttonIdx;
+                // Second row of controls
+                ImGui::Dummy(ImVec2(1, 2));
+                if (ImGui::SmallButton("Clear Slot")) {
+                    std::string err;
+                    if (MacroController::DeserializeSlot(curSlot, std::string(), err)) {
+                        s_macroText = MacroController::SerializeSlot(curSlot, s_includeBuffers);
+                        ensureBufferFromText(s_macroText);
+                        s_undoStack.clear(); s_redoStack.clear(); s_prevText = s_macroText; s_applyError.clear();
+                        DirectDrawHook::AddMessage("Cleared macro slot", "MACRO", RGB(255,220,120), 900, 0, 120);
+                    } else {
+                        s_applyError = err;
                     }
                 }
+                ImGui::SameLine();
+                bool canUndo = !s_undoStack.empty();
+                bool canRedo = !s_redoStack.empty();
+                if (!canUndo) ImGui::BeginDisabled();
+                if (ImGui::SmallButton("Undo")) {
+                    if (!s_undoStack.empty()) {
+                        s_redoStack.push_back(s_macroText);
+                        s_macroText = s_undoStack.back(); s_undoStack.pop_back();
+                        ensureBufferFromText(s_macroText);
+                        s_prevText = s_macroText;
+                    }
+                }
+                if (!canUndo) ImGui::EndDisabled();
+                ImGui::SameLine();
+                if (!canRedo) ImGui::BeginDisabled();
+                if (ImGui::SmallButton("Redo")) {
+                    if (!s_redoStack.empty()) {
+                        s_undoStack.push_back(s_macroText);
+                        s_macroText = s_redoStack.back(); s_redoStack.pop_back();
+                        ensureBufferFromText(s_macroText);
+                        s_prevText = s_macroText;
+                    }
+                }
+                if (!canRedo) ImGui::EndDisabled();
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Copy")) {
+                    ImGui::SetClipboardText(s_textBuf.data());
+                    DirectDrawHook::AddMessage("Copied macro text", "MACRO", RGB(180,255,220), 700, 0, 120);
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Paste")) {
+                    const char* clip = ImGui::GetClipboardText();
+                    if (clip && *clip) {
+                        s_undoStack.push_back(s_macroText);
+                        s_redoStack.clear();
+                        s_macroText = std::string(clip);
+                        ensureBufferFromText(s_macroText);
+                        s_prevText = s_macroText;
+                        s_applyError.clear();
+                        // Enter edit mode so user can see/adjust pasted content immediately
+                        s_editMode = true;
+                    }
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Insert Sample")) {
+                    // Sample: 5A, wait 3f, 5B, wait 3f, 5C, then a 623B written with per-tick buffer groups
+                    // 623 example provided by user: 6 {3: 6 6 6} 2 {3: 2 2 2} 3 {3: 3 3 3} 5B {3: 5B 5 5}
+                    std::string sample =
+                        "EFZMACRO 1 "
+                        "5A 5x3 5B 5x3 5C "
+                        "6 {3: 6 6 6} 2 {3: 2 2 2} 3 {3: 3 3 3} 5B {3: 5B 5 5}";
+                    // Push current into undo and clear redo
+                    s_undoStack.push_back(s_macroText);
+                    s_redoStack.clear();
+                    s_macroText = sample;
+                    ensureBufferFromText(s_macroText);
+                    s_prevText = s_macroText;
+                    s_applyError.clear();
+                }
+                if (!s_applyError.empty()) {
+                    ImGui::TextColored(ImVec4(1.0f,0.4f,0.4f,1.0f), "Error: %s", s_applyError.c_str());
+                }
+                ImVec2 availEd = ImGui::GetContentRegionAvail();
+                // Reserve space for hint text and hotkeys section at bottom (~100px), ensure minimum 200px editor height
+                float editorH = (std::max)(200.0f, availEd.y - 100.0f);
+                float editorW = availEd.x;
+                
+                // Custom word-wrapped editor with manual line breaking
+                ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.10f, 0.10f, 0.10f, 0.94f));
+                ImGui::BeginChild("##macro_editor_wrapper", ImVec2(editorW, editorH), true);
+                
+                // Calculate wrapped lines for display
+                auto wrapText = [](const std::string& text, float wrapWidth, ImFont* font, float fontSize) -> std::vector<std::string> {
+                    std::vector<std::string> lines;
+                    if (text.empty()) {
+                        lines.push_back("");
+                        return lines;
+                    }
+                    
+                    std::string currentLine;
+                    std::string token;
+                    bool inBraces = false;
+                    int braceDepth = 0;
+                    
+                    for (size_t i = 0; i < text.size(); ++i) {
+                        char c = text[i];
+                        
+                        if (c == '\n') {
+                            // Explicit newline
+                            currentLine += token;
+                            lines.push_back(currentLine);
+                            currentLine.clear();
+                            token.clear();
+                            inBraces = false;
+                            braceDepth = 0;
+                        } else if (c == '{') {
+                            // Start of buffer group - keep with current token
+                            token += c;
+                            inBraces = true;
+                            braceDepth++;
+                        } else if (c == '}') {
+                            // End of buffer group
+                            token += c;
+                            braceDepth--;
+                            if (braceDepth <= 0) {
+                                inBraces = false;
+                                braceDepth = 0;
+                            }
+                        } else if (c == ' ' && !inBraces) {
+                            // Space outside braces - this is a break point
+                            // But first, check if adding this token would exceed width
+                            std::string testLine = currentLine + token + " ";
+                            ImVec2 size = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, testLine.c_str());
+                            
+                            if (size.x > wrapWidth && !currentLine.empty()) {
+                                // Line too long, break before this token
+                                lines.push_back(currentLine);
+                                currentLine = token + " ";
+                            } else {
+                                currentLine += token + " ";
+                            }
+                            token.clear();
+                        } else {
+                            // Regular character or space inside braces
+                            token += c;
+                        }
+                    }
+                    
+                    // Add remaining text
+                    currentLine += token;
+                    if (!currentLine.empty()) {
+                        lines.push_back(currentLine);
+                    }
+                    
+                    return lines;
+                };
+                
+                ImFont* font = ImGui::GetFont();
+                float fontSize = ImGui::GetFontSize();
+                float contentWidth = ImGui::GetContentRegionAvail().x - 10.0f;
+                
+                if (!s_editMode) {
+                    // Display mode with proper word wrapping
+                    auto wrappedLines = wrapText(s_macroText, contentWidth, font, fontSize);
+                    
+                    for (const auto& line : wrappedLines) {
+                        ImGui::TextUnformatted(line.c_str());
+                    }
+                    
+                    // Click to enter edit mode
+                    if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0)) {
+                        s_editMode = true;
+                        // When entering edit mode, insert newlines for visual wrapping
+                        auto wrappedLines = wrapText(s_macroText, contentWidth, font, fontSize);
+                        std::string wrappedText;
+                        for (size_t i = 0; i < wrappedLines.size(); ++i) {
+                            wrappedText += wrappedLines[i];
+                            if (i < wrappedLines.size() - 1) {
+                                // Add newline if the line doesn't already end with one
+                                if (!wrappedLines[i].empty() && wrappedLines[i].back() != '\n') {
+                                    wrappedText += '\n';
+                                }
+                            }
+                        }
+                        s_macroText = wrappedText;
+                        strncpy_s(s_textBuf.data(), s_textBuf.size(), s_macroText.c_str(), _TRUNCATE);
+                    }
+                } else {
+                    // Edit mode - use InputTextMultiline
+                    ImGui::PushItemWidth(-1);
+                    ImGuiInputTextFlags editorFlags = ImGuiInputTextFlags_AllowTabInput;
+                    
+                    // Auto-focus on first frame of edit mode
+                    static bool s_needsFocus = false;
+                    if (s_needsFocus) {
+                        ImGui::SetKeyboardFocusHere();
+                        s_needsFocus = false;
+                    }
+                    
+                    if (ImGui::InputTextMultiline("##macro_edit", s_textBuf.data(), s_textBuf.size(), 
+                        ImVec2(-1, -1), editorFlags)) {
+                        std::string newText = s_textBuf.data();
+                        if (newText != s_macroText) {
+                            s_undoStack.push_back(s_macroText);
+                            s_redoStack.clear();
+                            s_macroText = newText;
+                            s_prevText = s_macroText;
+                        }
+                    }
+                    
+                    ImGui::PopItemWidth();
+                    
+                    // Exit edit mode on Escape or when losing focus
+                    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+                        s_editMode = false;
+                        // When exiting edit mode, remove newlines but preserve single spaces
+                        std::string unwrapped;
+                        bool prevWasSpace = false;
+                        for (char c : s_macroText) {
+                            if (c == '\n') {
+                                if (!prevWasSpace && !unwrapped.empty()) {
+                                    unwrapped += ' ';
+                                    prevWasSpace = true;
+                                }
+                            } else if (c == ' ') {
+                                if (!prevWasSpace) {
+                                    unwrapped += ' ';
+                                    prevWasSpace = true;
+                                }
+                            } else {
+                                unwrapped += c;
+                                prevWasSpace = false;
+                            }
+                        }
+                        s_macroText = unwrapped;
+                        strncpy_s(s_textBuf.data(), s_textBuf.size(), s_macroText.c_str(), _TRUNCATE);
+                    }
+                    if (!ImGui::IsItemActive() && !ImGui::IsItemFocused() && ImGui::IsMouseClicked(0) && !ImGui::IsItemHovered()) {
+                        s_editMode = false;
+                        // When exiting edit mode, remove newlines but preserve single spaces
+                        std::string unwrapped;
+                        bool prevWasSpace = false;
+                        for (char c : s_macroText) {
+                            if (c == '\n') {
+                                if (!prevWasSpace && !unwrapped.empty()) {
+                                    unwrapped += ' ';
+                                    prevWasSpace = true;
+                                }
+                            } else if (c == ' ') {
+                                if (!prevWasSpace) {
+                                    unwrapped += ' ';
+                                    prevWasSpace = true;
+                                }
+                            } else {
+                                unwrapped += c;
+                                prevWasSpace = false;
+                            }
+                        }
+                        s_macroText = unwrapped;
+                        strncpy_s(s_textBuf.data(), s_textBuf.size(), s_macroText.c_str(), _TRUNCATE);
+                    }
+                }
+                
+                ImGui::EndChild();
+                ImGui::PopStyleColor();
+                
+                if (!s_editMode) {
+                    ImGui::TextDisabled("(Click text to edit)");
+                }
+                {
+                    ImVec4 disabled = ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
+                    ImGui::PushStyleColor(ImGuiCol_Text, disabled);
+                    ImGui::TextWrapped("Hint: Use numpad directions with A/B/C/D and repeats, e.g. 5Ax50, 6, or 2 3 6C. Optional per-tick buffers: {3: 5 0x9A 6A}");
+                    ImGui::PopStyleColor();
+                }
+                ImGui::SeparatorText("Hotkeys");
+                ImGui::BulletText("Record: %s", GetKeyName(cfg.macroRecordKey).c_str());
+                ImGui::BulletText("Play: %s", GetKeyName(cfg.macroPlayKey).c_str());
+                ImGui::BulletText("Next Slot: %s", GetKeyName(cfg.macroSlotKey).c_str());
+                ImGui::EndTabItem();
             }
-            
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(80);
-            
-            // Fixed: Use a local variable for InputInt
-            int delayValue = *triggers[i].delay;
-            if (ImGui::InputInt("Delay", &delayValue, 1, 5)) {
-                *triggers[i].delay = (std::max)(0, delayValue); // Add parentheses around std::max
-            }
-            
-            // Custom action removed; no custom ID field rendered
-            
-            ImGui::PopID();
+
+            ImGui::EndTabBar();
+            // Remember whether Macros tab was active this frame
+            s_macrosActivePrev = macrosActiveThisFrame;
         }
     }
 
@@ -976,14 +2249,14 @@ namespace ImGuiGui {
             case CHAR_ID_MISAKI:   return "Misaki_Kawana";
             case CHAR_ID_MISHIO:   return "Mishio_Amano";
             case CHAR_ID_MISUZU:   return "Misuzu_Kamio";
-            case CHAR_ID_MIZUKA:   return "Mizuka_Nagamori";   // Mizuka
-            case CHAR_ID_NAGAMORI: return "Mizuka_Nagamori";   // Nagamori maps to same page
+            case CHAR_ID_MIZUKA:        return "Mizuka_Nagamori";
+            case CHAR_ID_UNKNOWN_BOSS:  return "UNKNOWN";
             case CHAR_ID_NANASE:   return "Rumi_Nanase";       // Rumi
             case CHAR_ID_SAYURI:   return "Sayuri_Kurata";
             case CHAR_ID_SHIORI:   return "Shiori_Misaka";
             case CHAR_ID_NAYUKI:   return "Nayuki_Minase_(asleep)"; // Sleepy
             case CHAR_ID_NAYUKIB:  return "Nayuki_Minase_(awake)";  // Awake
-            case CHAR_ID_MIZUKAB:  return "UNKNOWN";                // Unknown
+            case CHAR_ID_UNKNOWN:  return "UNKNOWN";
             default: return nullptr;
         }
     }
@@ -1004,125 +2277,286 @@ namespace ImGuiGui {
             }
             // Small hint so users know how to scroll without a mouse
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 0.8f, 0.85f));
-            ImGui::TextDisabled("Hint: Use Up/Down/PageUp/PageDown or D-Pad to scroll this Help.");
+            ImGui::TextDisabled("Hint: Use Up/Down/Mousewheel or D-Pad to scroll this Help section.");
             ImGui::PopStyleColor();
             // Short intro
-            ImGui::TextWrapped("This Help covers the overlay features, hotkeys, and training tools. While the menu is open, practice hotkeys are gated and the game auto-pauses; it resumes on close.");
+            ImGui::TextWrapped("This Help covers the overlay features, hotkeys, and training tools. While the menu is open, practice hotkeys are disabled and the game auto-pauses; it resumes on close.");
             ImGui::Dummy(ImVec2(1, 4));
 
             if (ImGui::BeginTabBar("##HelpTabs", ImGuiTabBarFlags_None)) {
-                // Overview
-               /* if (ImGui::BeginTabItem("Overview")) {
-                    ImGui::SeparatorText("Quick start");
-                    ImGui::TextWrapped("Open the overlay, set options, then press Apply at the bottom. The game auto-pauses while the menu is open and resumes on close.");
-                    BulletTextWrapped("Toggle Overlay: %s (Controller: %s)", GetKeyName(cfg.toggleImGuiKey).c_str(), Config::GetGamepadButtonName(cfg.gpToggleMenuButton).c_str());
-                    BulletTextWrapped("Load Position: %s (Controller: %s)", GetKeyName(cfg.teleportKey).c_str(), Config::GetGamepadButtonName(cfg.gpTeleportButton).c_str());
-                    BulletTextWrapped("Save Position: %s (Controller: %s)", GetKeyName(cfg.recordKey).c_str(), Config::GetGamepadButtonName(cfg.gpSavePositionButton).c_str());
-                    BulletTextWrapped("Toggle Stats Display: %s", GetKeyName(cfg.toggleTitleKey).c_str());
-
-                    ImGui::Separator();
-                    ImGui::SeparatorText("Config & notes");
-                    BulletTextWrapped("Config file path: %s", Config::GetConfigFilePath().c_str());
-                    BulletTextWrapped("Menu behavior: training hotkeys are gated while the menu is open; game unpauses on close.");
-                    BulletTextWrapped("Overlays: trigger/status overlays update automatically; they reset when leaving Practice or on reinit.");
-                    BulletTextWrapped("Network: this tool targets offline training. Online/netplay behavior should not be affected in any way.");
-
-                    // GIF moved to About tab
-                    ImGui::EndTabItem();
-                }*/
-
-                // Basics
-                if (ImGui::BeginTabItem("Controls and Basics")) {
-                    ImGui::SeparatorText("Basic controls");
-                    ImGui::TextWrapped("Open the overlay, set options, then press Apply at the bottom. The game auto-pauses while the menu is open and resumes on close.");
-                    BulletTextWrapped("Toggle Overlay: %s (Controller: %s)", GetKeyName(cfg.toggleImGuiKey).c_str(), Config::GetGamepadButtonName(cfg.gpToggleMenuButton).c_str());
-                    BulletTextWrapped("Load Position: %s (Controller: %s)", GetKeyName(cfg.teleportKey).c_str(), Config::GetGamepadButtonName(cfg.gpTeleportButton).c_str());
-                    BulletTextWrapped("Save Position: %s (Controller: %s)", GetKeyName(cfg.recordKey).c_str(), Config::GetGamepadButtonName(cfg.gpSavePositionButton).c_str());
-                    BulletTextWrapped("Toggle Stats Display: %s", GetKeyName(cfg.toggleTitleKey).c_str());
-                    ImGui::SeparatorText("Position tools (hold Load)");
-                    ImGui::TextDisabled("Hold the Load key: Keyboard=%s, Controller=%s", GetKeyName(cfg.teleportKey).c_str(), Config::GetGamepadButtonName(cfg.gpTeleportButton).c_str());
-                    BulletTextWrapped("Center Both: Load + Down (Controller: D-Pad Down + Load)");
-                    BulletTextWrapped("Left Corner: Load + Left (Controller: D-Pad Left + Load)");
-                    BulletTextWrapped("Right Corner: Load + Right (Controller: D-Pad Right + Load)");
-                    BulletTextWrapped("Round Start: Load + Down + A (Controller: hold D-Pad Down + A, then press Load)");
-                    BulletTextWrapped("Swap Positions: Load + D (Controller: %s)", Config::GetGamepadButtonName(cfg.gpSwapPositionsButton).c_str());
-
-                    ImGui::Separator();
-                    ImGui::SeparatorText("Practice basics");
-                    BulletTextWrapped("Switch Players: %s (Controller: %s, Practice only)", GetKeyName(cfg.switchPlayersKey).c_str(), Config::GetGamepadButtonName(cfg.gpSwitchPlayersButton).c_str());
-                    BulletTextWrapped("P2 Control: lets you play P2. While ON, the game's F6 (stance) and F7 (auto-block) keys won't work.");
-                    BulletTextWrapped("Dummy Auto-Block: Off / Block All / Only First Hit / Start After First Hit.");
-                    BulletTextWrapped("Adaptive stance: auto-picks high vs air, low vs grounded. Disables manual stance while ON. Should also properly handle grounded overheads.");
-
-                    ImGui::Separator();
-                    ImGui::TextDisabled("Overlay & UI");
-                    BulletTextWrapped("UI Scale and Font are configurable (General section in config). If text feels too small/large, adjust uiScale or uiFont.");
-                    BulletTextWrapped("Navigation: mouse, keyboard arrows, or controller D-Pad. Expand/Collapse sections with Enter/Space or A button.");
-                    BulletTextWrapped("Footer hotkeys: Apply=%s, Refresh=%s, Exit=%s (customizable in [Hotkeys]).",
-                        GetKeyName(cfg.uiAcceptKey).c_str(), GetKeyName(cfg.uiRefreshKey).c_str(), GetKeyName(cfg.uiExitKey).c_str());
-                    BulletTextWrapped("Virtual Cursor (optional): When the game is in fullscreen you still can use the mouse whenever the menu is open. Sometimes it might get stuck after alt-tabbing or if you use multiple monitors. Quickly dragging the mouse should free it. If not, toggle the menu off/on with hotkeys.");
+                int rq3 = guiState.requestedHelpSubTab; guiState.requestedHelpSubTab = -1;
+                // Getting Started
+                ImGuiTabItemFlags _setHelp0 = (rq3 == 0) ? ImGuiTabItemFlags_SetSelected : 0;
+                if (ImGui::BeginTabItem("Getting Started", nullptr, _setHelp0)) {
+                    guiState.helpSubTab = 0;
+                    if (ImGui::BeginTabBar("##HelpGettingStartedTabs", ImGuiTabBarFlags_None)) {
+                        // Quick Start
+                        if (ImGui::BeginTabItem("Quick Start")) {
+                            ImGui::TextWrapped("Open the menu, adjust options, then press Apply at the bottom. While the menu is open, practice hotkeys are disabled and the game auto-pauses; it resumes on close.");
+                            BulletTextWrapped("Open Menu: Esc (Controller: %s)", Config::GetGamepadButtonName(cfg.gpToggleMenuButton).c_str());
+                            BulletTextWrapped("Help is available from the Help tab.");
+                            BulletTextWrapped("Save Position: %s (Controller: %s)", GetKeyName(cfg.recordKey).c_str(), Config::GetGamepadButtonName(cfg.gpSavePositionButton).c_str());
+                            BulletTextWrapped("Load Position: %s (Controller: %s)", GetKeyName(cfg.teleportKey).c_str(), Config::GetGamepadButtonName(cfg.gpTeleportButton).c_str());
+                            BulletTextWrapped("Toggle Stats: %s", cfg.toggleTitleKey < 0 ? "Disabled" : GetKeyName(cfg.toggleTitleKey).c_str());
+                            ImGui::EndTabItem();
+                        }
+                        // Position Tools
+                        if (ImGui::BeginTabItem("Position Tools")) {
+                            ImGui::TextDisabled("Hold Load: Keyboard=%s, Controller=%s", GetKeyName(cfg.teleportKey).c_str(), Config::GetGamepadButtonName(cfg.gpTeleportButton).c_str());
+                            BulletTextWrapped("Center Both: Load + Down (D-Pad Down + Load)");
+                            BulletTextWrapped("Left Corner: Load + Left (D-Pad Left + Load)");
+                            BulletTextWrapped("Right Corner: Load + Right (D-Pad Right + Load)");
+                            BulletTextWrapped("Round Start: Load + Down + A (hold Down+A, then press Load)");
+                            BulletTextWrapped("Swap Positions: Load + D (Controller: %s)", Config::GetGamepadButtonName(cfg.gpSwapPositionsButton).c_str());
+                            ImGui::EndTabItem();
+                        }
+                        // Menu Tips
+                        if (ImGui::BeginTabItem("Menu Tips")) {
+                            BulletTextWrapped("Navigation: mouse, arrow keys, or D-Pad; Enter/Space/A to toggle/activate.");
+                            BulletTextWrapped("Footer hotkeys: Apply=%s, Refresh=%s, Exit=%s.",
+                                GetKeyName(cfg.uiAcceptKey).c_str(), GetKeyName(cfg.uiRefreshKey).c_str(), GetKeyName(cfg.uiExitKey).c_str());
+                            BulletTextWrapped("UI sizing: tweak uiScale/uiFont in the config if text feels off.");
+                            BulletTextWrapped("Use Esc to move back or close the menu.");
+                            ImGui::EndTabItem();
+                        }
+                        ImGui::EndTabBar();
+                    }
                     ImGui::EndTabItem();
                 }
 
-                // Tools - Training
-                if (ImGui::BeginTabItem("Tools")) {
-                    ImGui::SeparatorText("Options");
-                    BulletTextWrapped("Always Recoil Guard: makes the dummy RG instead of blocking. Blocking should be enabled beforehand.");
-                    BulletTextWrapped("Counter RG: tries to RG back after getting RG'd where the game allows it. Default: OFF. Turning this ON without Always RG will make opponent counter RG.");
-                    BulletTextWrapped("Auto-Airtech: auto air-recover Forward/Backward; 'Delay' adds frames before the tech.");
-                    BulletTextWrapped("Auto-Jump: make selected side(s) jump Neutral/Forward/Backward when able.");
-                    BulletTextWrapped("Final Memory (Global): 'Allow at any HP' lets FM be used regardless of life.");
+                // Guide (consolidated info)
+                ImGuiTabItemFlags _setHelp1 = (rq3 == 1) ? ImGuiTabItemFlags_SetSelected : 0;
+                if (ImGui::BeginTabItem("Guide", nullptr, _setHelp1)) {
+                    guiState.helpSubTab = 1;
+                    if (ImGui::BeginTabBar("##HelpGuideTabs", ImGuiTabBarFlags_None)) {
+                        // Basics
+                        if (ImGui::BeginTabItem("Basics")) {
+                            ImGui::TextWrapped("Core practice tools and dummy options you'll use most.");
+                            ImGui::Dummy(ImVec2(1, 2));
+                            ImGui::TextDisabled("Quick setup");
+                            BulletTextWrapped("Switch Players: %s (Controller: %s)", GetKeyName(cfg.switchPlayersKey).c_str(), Config::GetGamepadButtonName(cfg.gpSwitchPlayersButton).c_str());
+                            BulletTextWrapped("P2 Control: lets you play as P2; F6/F7 won't work while ON.");
+                            BulletTextWrapped("Dummy Auto-Block: Off / Block All / Only Block First Hit / Block After First Hit.");
+                            BulletTextWrapped("Adaptive Stance: auto-picks high vs air and overheads, low vs grounded; disables manual stance while ON.");
 
-                    ImGui::Separator();
-                    ImGui::SeparatorText("Continuous Recovery (per-player)");
-                    ImGui::TextWrapped("Restores HP/Meter/RF when a side returns to neutral. Configure P1/P2 in Options -> Continuous Recovery.");
-                    BulletTextWrapped("HP/Meter: Off, presets, or Custom.");
-                    BulletTextWrapped("RF: presets or Custom. BIC (force Blue IC) is only under RF -> Custom; Red presets flip IC back to Red.");
-                    BulletTextWrapped("RF Freeze (optional): if enabled in config, freezes the value of RF gauge. The freeze starts only when Recovery sets RF and stops when Recovery for RF is turned off.");
-                    BulletTextWrapped("Defaults: Recovery is OFF per-player. Maintenance runs in matches; can be neutral-only (config).");
-                    BulletTextWrapped("Tip: EFZ's F4/F5 Recovery can interfere. If things look wrong, press F4/F5 to cycle back to Normal.");
-                    ImGui::EndTabItem();
-                }
-                if (ImGui::BeginTabItem("Characters")) {
-                  ImGui::SeparatorText("Character-specific settings");
-                    ImGui::TextWrapped("These settings appear only whenever the proper characters are selected. You can find the characters and the available settings for the below:");
-                    BulletTextWrapped("Ikumi: Infinite Blood / Genocide timer tweaks (Practice only).");
-                    BulletTextWrapped("Misuzu: Feathers, Poison timer/level with optional freeze.");
-                    BulletTextWrapped("Mishio: Element (None/Fire/Lightning/Awakened) and Awakened timer controls, Infinite Awakening and element toggles.");
-                    BulletTextWrapped("Akiko: Bullet cycle lock, Clean Hit helper, Timeslow trigger.");
-                    BulletTextWrapped("Mai: Ghost/Charge/Awakening timers, 'No CD', Ghost position override.");
-                    BulletTextWrapped("Kano: Magic meter controls with optional value lock.");
-                    BulletTextWrapped("Nayuki (Awake): Snowbunnies timer with infinite toggle.");
-                    BulletTextWrapped("Nayuki (Asleep): Jam count.");
-                    BulletTextWrapped("Mio: Stance (Short/Long) with lock.");
-                    BulletTextWrapped("Doppel: Golden Doppel toggle.");
-                    BulletTextWrapped("Nanase (Rumi): Shinai/Barehanded, Infinite Shinai, Final Memory (Kimchi) timer controls.");
-                    BulletTextWrapped("Minagi: Always readied Michiru toggle and Michiru position override.");
-                                    ImGui::EndTabItem();
-                                }
-                // Tools - Automation
-                if (ImGui::BeginTabItem("Auto Actions & Macros")) {
-                    ImGui::SeparatorText("Auto Action");
-                    ImGui::TextWrapped("Creates a simple trigger to events like Wakeup, After Block, After Hitstun, After Airtech, or Recoil.");
-                    BulletTextWrapped("Target: choose P1, P2, or Both.");
-                    BulletTextWrapped("Action: pick a normal, specials/supers, macros and others(dash/backdash/jump/block.). Dash can have an optional follow-up normal.");
-                    BulletTextWrapped("Delay/Strength: delay in frames; strength maps to A/B/C keys.");
-                    BulletTextWrapped("Macro: choose 'Macro' as the action and select a Slot to play your recording.");
-                    BulletTextWrapped("Gating: triggers have per-attempt gating to avoid spam; clear triggers to reset.");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextDisabled("Block & RG Modes");
+                            ImGui::TextWrapped("Control how the dummy blocks and uses Recoil Guard:");
+                            BulletTextWrapped("Random Block: coin-flip to block; great for testing hit-confirms on gaps.");
+                            BulletTextWrapped("Always RG: treats eligible blocks as Recoil Guard.");
+                            BulletTextWrapped("Random RG: attempts RG at random.");
+                            BulletTextWrapped("Counter RG: tries to RG back after you RG.");
+                            ImGui::Dummy(ImVec2(1, 2));
+                            ImGui::TextDisabled("Notes");
+                            ImGui::TextWrapped("These modes can conflict. Turning one on can turn others off automatically.");
 
-                    ImGui::Separator();
-                    ImGui::SeparatorText("Macros - quick how-to");
-                    BulletTextWrapped("Slots: cycle with %s.", GetKeyName(cfg.macroSlotKey).c_str());
-                    BulletTextWrapped("Record: press %s to arm, press again to start, press again to stop.", GetKeyName(cfg.macroRecordKey).c_str());
-                    BulletTextWrapped("Play: press %s to play current slot (drives P2).", GetKeyName(cfg.macroPlayKey).c_str());
-                    BulletTextWrapped("Facing-aware: directions flip automatically based on P2 facing.");
-                    BulletTextWrapped("Frame-step aware: you can use Revival's default keys for framestepping (by defaults it's SPACE and P keys for the pause and frame advance respectively).");
-                    BulletTextWrapped("Empty slots: playing an empty slot does nothing.");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextDisabled("Training Tools");
+                            ImGui::TextWrapped("Helpful automation for common drills:");
+                            BulletTextWrapped("Auto-Airtech: Forward/Backward tech; 'Delay' adds frames before tech (great for testing late airtechs).");
+                            BulletTextWrapped("Auto-Jump: neutral/forward/back jump when able.");
+                            BulletTextWrapped("Final Memory (Global): 'Allow at any HP' removes HP checks. You can uncheck this to disable.");
+
+                            ImGui::Dummy(ImVec2(1, 2));
+                            ImGui::TextDisabled("Frame Advantage & Gaps");
+                            ImGui::TextWrapped("The overlay shows Frame Advantage after an exchange and Gaps during strings:");
+                            ImGui::Indent();
+                            BulletTextWrapped("Frame Advantage: appears after both sides recover; stays for about %.1fs (Settings -> General).", Config::GetSettings().frameAdvantageDisplayDuration);
+                            BulletTextWrapped("Gaps: briefly flash during strings when there's a hole.");
+                            BulletTextWrapped("During Recoil Guard, FA1/FA2 labels show advantage for each part.");
+                            ImGui::Unindent();
+
+                            ImGui::EndTabItem();
+                        }
+                        // Box Display
+                        if (ImGui::BeginTabItem("Box Display")) {
+                            ImGui::TextWrapped("Box Display draws simple colored shapes over the match so you can see what the game is checking.");
+                            ImGui::TextWrapped("Enable it from Main -> Options -> Display Overlays. It only draws during a local Practice match.");
+                            ImGui::Dummy(ImVec2(1, 4));
+
+                            ImGui::TextDisabled("Character boxes");
+                            BulletTextWrapped("Red boxes are hitboxes. If they touch the opponent's hurtbox, the move can hit.");
+                            BulletTextWrapped("Green boxes are hurtboxes. This is where that character can be hit.");
+                            BulletTextWrapped("Yellow boxes are collision boxes, also called pushboxes. They show the body space characters use for pushing and spacing.");
+                            ImGui::Dummy(ImVec2(1, 4));
+
+                            ImGui::TextDisabled("Projectile boxes");
+                            BulletTextWrapped("Blue boxes on bullets/projectiles show the projectile collision area the engine is checking.");
+                            BulletTextWrapped("Bright blue means the projectile is active for projectile interaction. Faint blue means it exists, but is not active for that check right now.");
+                            BulletTextWrapped("The blue box is not always the full sprite. Some projectiles are larger or smaller than the picture on screen.");
+                            ImGui::Dummy(ImVec2(1, 4));
+
+                            ImGui::TextDisabled("Projectile helpers");
+                            BulletTextWrapped("White dots mark projectile origin points. Think of them as the projectile's anchor, not the center of its blue box.");
+                            BulletTextWrapped("Magenta boxes show where two active projectile boxes overlap. Use this to check clashes and projectile interactions.");
+                            BulletTextWrapped("If a projectile returns or changes state, its visible sprite may keep moving even when its blue interaction box is gone.");
+                            ImGui::Dummy(ImVec2(1, 4));
+
+                            ImGui::TextDisabled("Mizuka notes");
+                            BulletTextWrapped("When Mizuka is in the match, Character Settings adds Note Trigger Ranges and Affected Notes.");
+                            BulletTextWrapped("Orange/brown areas show where notes can be activated or exploded. Stronger fill means active now; lighter fill is a preview.");
+                            BulletTextWrapped("Pale yellow highlights notes that are currently affected or inside a trigger area.");
+                            BulletTextWrapped("These are enabled by default, but Display Overlays -> Projectile Interactions is still the master switch.");
+                            ImGui::Dummy(ImVec2(1, 4));
+
+                            ImGui::TextDisabled("Reading it");
+                            BulletTextWrapped("Boxes are engine data, not artwork. Trust the boxes when they disagree with the sprite.");
+                            BulletTextWrapped("Use Box Fill Alpha to make filled areas lighter or darker. The outlines stay strong so the box edges remain readable.");
+                            BulletTextWrapped("Turn layers on one at a time if the screen gets noisy: Hitboxes, Hurtboxes, Collision Boxes, then Projectile Interactions.");
+                            ImGui::EndTabItem();
+                        }
+                        // Recovery (Consolidated: per-player + Automatic Recovery info)
+                        if (ImGui::BeginTabItem("Recovery")) {
+                            ImGui::SeparatorText("Continuous Recovery (Per-Player)");
+                            ImGui::TextWrapped("Restores HP/Meter/RF when a side returns to neutral. Configure per-side under Main -> Options -> Continuous Recovery. Disabled automatically when game's own HP/meter recovery is active (F4/F5).\n");
+                            BulletTextWrapped("HP/Meter: Off, presets, or Custom.");
+                            BulletTextWrapped("RF: presets or Custom. BIC (Blue IC) is under RF->Custom. Red presets changes IC back to Red.");
+                            BulletTextWrapped("RF Freeze (optional): if enabled in config, freezes RF after Recovery sets it until you turn Recovery (RF) off so it won't increase by itself.");
+                            //BulletTextWrapped("Defaults: Recovery is OFF per-player. Enforcement runs in matches; can be limited to neutral-only via config.");
+                            ImGui::Dummy(ImVec2(1, 6));
+                            ImGui::SeparatorText("Automatic Recovery (F5)");
+                            ImGui::TextWrapped("Game-driven recovery modes toggled from Main -> Values: \n- Disabled: no automatic regeneration. \n- Full values: sets all HP/Meter values to max. \n- FM values (3332): sets HP to 3332 and all Meter values to max.");
+                            BulletTextWrapped("Switching Automatic Recovery from Full/FM to Disabled in the GUI specifically sets both players to default match start values(unlike F5 button on it's 3rd press).");
+                            BulletTextWrapped("While F5 or F4 is active, manual value edits are disallowed. X/Y positions can still be changed in the Values tab.");
+                            BulletTextWrapped("Tip: If numbers look off, press F4/F5 to return to Normal mode, then re-Apply.");
+                            ImGui::EndTabItem();
+                        }
+                        // Character Settings
+                        if (ImGui::BeginTabItem("Character Settings")) {
+                            ImGui::TextWrapped("Character-specific options appear only when that character is present in the match.");
+                            ImGui::Dummy(ImVec2(1, 6));
+                            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Ikumi");
+                            ImGui::TextWrapped("Toggle Infinite Blood to stay in blood mode permanently. Genocide timer shows the remaining duration and can be adjusted.");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Misuzu");
+                            ImGui::TextWrapped("Adjust feather count (0-5). Poison timer and level can be set manually; enable Freeze Poison to prevent the timer from ticking down.");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Mishio");
+                            ImGui::TextWrapped("Select element (None/Fire/Lightning/Awakened). Awakened timer can be adjusted; Infinite Element and Infinite Awakened prevent decay.");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Mai");
+                            ImGui::TextWrapped("Control Mini-Mai, Charge, and Awakening timers separately. 'No Charge Cooldown' removes the delay between charge uses. Mini-Mai X/Y position can be overridden for testing setups.");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Kano");
+                            ImGui::TextWrapped("Set magic meter value (0-3). Enable Lock Magic to keep the meter at your chosen value even when spent.");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Nayuki (Awake)");
+                            ImGui::TextWrapped("Snow bunnies timer controls how long bunnies stay active. Infinite Snow bunnies keeps them at maximum duration.");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Nayuki (Asleep)");
+                            ImGui::TextWrapped("Jam count (0-9) controls stored jams. Lock Jam restores the count to your set value on wakeup and after neutral-style resets or loads.");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Mio");
+                            ImGui::TextWrapped("Switch between Short and Long stance. Lock Stance prevents the game from automatically changing it during certain moves.");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Doppel");
+                            ImGui::TextWrapped("Golden Doppel (Enlightened) toggle makes Doppel enter the FM state. Uncheck to disable.");
+                            ImGui::TextWrapped("Follow-Up Tech decides how the opponent escapes her command-throw follow-ups: Never locks them out, Tech B escapes the B follow-ups, Tech C escapes the A follow-ups, Always escapes whichever branch she commits to, and Random picks B or C once per follow-up. Tech Stage picks where that escape is allowed. If the opponent gets their own escape in first their choice wins, and the grab itself and the Automatic Follow-up can never be escaped.");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Sayuri");
+                            ImGui::TextWrapped("Remembered Move sets the attack she has countered and is waiting for. Whenever she blocks that same attack standing or crouching she flashes white, and A, B or C cuts straight out of the blockstun into Magical Cutter. Off leaves it to her own counter, Nothing empties it so you can practise baiting, Last Blocked keeps loading whatever she just blocked, and picking a move from the list stands in for landing the counter and holds it there so a stray counter cannot replace it. The list is the current opponent's moves and is rebuilt when they change. The cut-out needs a fresh press: a button already held through the block freeze produces nothing, so let go and press again. A dummy Sayuri on auto-block will keep loading and arming on her own.");
+                            ImGui::TextWrapped("Magical Cutter set to Always Ready opens that same window on every standing or crouching block, whatever she remembers. Air blocking never opens the window, and it stops working once Akiko's debuff has stacked up on her.");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Nanase (Rumi)");
+                            ImGui::TextWrapped("Toggle between Shinai and Barehanded mode. Infinite Shinai prevents it from breaking. You can also adjust Kimchi timer as well as make it stop decaying.");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Minagi");
+                            ImGui::TextWrapped("Always-readied Michiru always keeps Michiru in readied state. Michiru X/Y position lets you place her anywhere for setup testing.");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Akiko");
+                            ImGui::TextWrapped("Lock Bullet Cycle to keep a specific bullet pattern. Timeslow trigger controls the slowdown effect.");
+                            ImGui::TextWrapped("Clean Hit helper shows timing feedback for 623 inputs - if it says 'Too Low', delay your 623; if 'Too High', press faster.");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Mizuka");
+                            ImGui::TextWrapped("Note Trigger Ranges and Affected Notes appear when she is in the match. They control the note interaction overlays while Display Overlays -> Projectile Interactions is enabled.");
+                            ImGui::EndTabItem();
+                        }
+                        // Auto Actions
+                        if (ImGui::BeginTabItem("Auto Actions")) {
+                            ImGui::TextWrapped("Make the dummy act on key moments: On Wakeup, After Block/Hitstun/Airtech, or on Recoil Guard.");
+                            ImGui::Dummy(ImVec2(1, 2));
+                            ImGui::TextDisabled("Quick setup");
+                            BulletTextWrapped("Enable the trigger rows you want. Auto Actions target the side opposite local control, P2 by default.");
+                            BulletTextWrapped("Randomize Triggers adds a coin-flip so trigger attempts sometimes skip activation.");
+                            BulletTextWrapped("Pre-buffer Wakeup starts a wakeup macro slightly early so its first attack is buffered; wakeup specials buffer on their own.");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextDisabled("Per trigger");
+                            ImGui::TextWrapped("Pick an action (normals, forward/back normals, specials, supers, jump, dash/backdash, block, Final Memory, or a Macro slot), the button if needed, and an optional delay.");
+                            ImGui::TextWrapped("You can add extra rows or turn on Use Pool to randomly pick from several actions(might need to resize the window if you can't see the + button).");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextDisabled("Notes");
+                            ImGui::TextWrapped("Input-buffer actions briefly hand control to the configured target side; simple attacks and jumps use direct writes so AI/auto behavior stays stable.");
+                            BulletTextWrapped("Side swaps are handled so macros and auto-actions do not silently end up on the wrong character.");
+                            ImGui::TextWrapped("By default on wake-up action tries to use the special move on the last frame of the wakeup(all characters are properly handled).");
+                            BulletTextWrapped("It should also properly handle crossups as well.");
+                            ImGui::TextWrapped("Actions are rate-limited to avoid spam; toggling the trigger clears it.");
+                            ImGui::TextWrapped("'After Airtech' here is separate from Auto-Airtech; you need to enable auto-airtech for After Airtech trigger to work.");
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextDisabled("Tip: Testing Wakeup Timing");
+                            ImGui::TextWrapped("Use Pre-buffer Wakeup to test wakeup macros; it buffers the macro during the rising frames of wakeup.");
+                            ImGui::EndTabItem();
+                        }
+                        // Macros
+                        if (ImGui::BeginTabItem("Macros")) {
+                            ImGui::TextWrapped("Record, play, and edit inputs as macros. Slots cycle with a hotkey; playback flips directions for P2 automatically.");
+                            ImGui::Dummy(ImVec2(1, 2));
+                            ImGui::TextDisabled("Quick setup");
+                            BulletTextWrapped("Record: %s enters Pre-recording (your usual P1 controls drive P2); press again to start, then again to save.", GetKeyName(cfg.macroRecordKey).c_str());
+                            BulletTextWrapped("Play: %s plays the current slot.", GetKeyName(cfg.macroPlayKey).c_str());
+                            BulletTextWrapped("Slots: cycle with %s. Empty slots do nothing.", GetKeyName(cfg.macroSlotKey).c_str());
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextDisabled("Tips");
+                            ImGui::TextWrapped("Exit Pre-recording with Play (Keyboard: %s, Controller: %s). Playback handles side swaps automatically, and framestep tools work during playback.", GetKeyName(cfg.macroPlayKey).c_str(), Config::GetGamepadButtonName(cfg.gpMacroPlayButton).c_str());
+                            ImGui::Dummy(ImVec2(1, 4));
+                            ImGui::TextDisabled("Notation");
+                            ImGui::TextWrapped("Write macros as plain text: a header plus tick tokens. Use numpad directions (1..9, 5=neutral) with A/B/C/D (e.g., 5A, 6B, 236C). 'N' is neutral. Repeat packs with xN. Optional per-tick buffers: {k: v1 v2 ...}. Whitespace is flexible; Apply normalizes. Write for P1-facing; P2 playback flips 4/6.");
+                            ImGui::Dummy(ImVec2(1, 2));
+                            ImGui::TextDisabled("Example");
+                            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.8f, 0.95f, 1.0f, 1.0f));
+                            ImGui::TextWrapped("EFZMACRO 1 5A 5x3 5B 5x3 5C 6 {3: 6 6 6} 2 {3: 2 2 2} 3 {3: 3 3 3} 5B {3: 5B 5 5}");
+                            ImGui::PopStyleColor();
+                            ImGui::Indent();
+                            BulletTextWrapped("'x3' inserts neutral ticks between presses.");
+                            BulletTextWrapped("The {3: ...} packs perform three writes within a tick.");
+                            ImGui::Unindent();
+                            ImGui::EndTabItem();
+                        }
+
+                        // Issues (merged Conflicts + Troubleshooting)
+                        if (ImGui::BeginTabItem("Issues")) {
+                            ImGui::SeparatorText("Conflicts");
+                            ImGui::TextWrapped("Some features auto-disable others to avoid clashes:");
+                            ImGui::Indent();
+                            BulletTextWrapped("Random Block, Random RG, and Always RG are mutually exclusive; turning one on can turn others off.");
+                            BulletTextWrapped("Counter RG won't work if Always RG is on.");
+                            BulletTextWrapped("While the menu is open, practice hotkeys are disabled and the game auto-pauses; there's a brief cooldown after closing.");
+                            ImGui::Unindent();
+
+                            ImGui::Dummy(ImVec2(1, 6));
+                            ImGui::SeparatorText("Troubleshooting");
+                            BulletTextWrapped("If values look wrong, press F4/F5 to return to Normal mode, then re-apply.");
+                            BulletTextWrapped("Continuous Recovery can be limited to neutral in Settings.");
+                            BulletTextWrapped("Use the Help tab when you need control notes or troubleshooting.");
+                            BulletTextWrapped("If something seems off, go to the main menu and back to Practice.");
+
+                            ImGui::Dummy(ImVec2(1, 8));
+                            ImGui::SeparatorText("Unsupported EfzRevival Versions");
+                            ImGui::TextWrapped("If your EfzRevival build isn’t listed as supported (see About), you may see quirks:");
+                            ImGui::Indent();
+                            BulletTextWrapped("Avoid unsupported versions for netplay. Mod may still detect online sessions via active IP checks, but newer builds of Revival can introduce unexpected issues. If problems occur, you may try launching the game directly via efz.exe as an alternative.");
+                            BulletTextWrapped("Hotkeys may still be recognized with this menu open, but the game should remain paused.");
+                            ImGui::Unindent();
+                            ImGui::EndTabItem();
+                        }
+                        ImGui::EndTabBar();
+                    }
                     ImGui::EndTabItem();
                 }
 
                 // Resources
-                if (ImGui::BeginTabItem("Resources")) {
+                ImGuiTabItemFlags _setHelp2 = (rq3 == 2) ? ImGuiTabItemFlags_SetSelected : 0;
+                if (ImGui::BeginTabItem("Resources", nullptr, _setHelp2)) {
+                    guiState.helpSubTab = 2;
                     ImGui::SeparatorText("Game Resources");
                     BulletTextWrapped("Open helpful external resources in your browser:");
                     ImGui::Indent();
@@ -1137,16 +2571,16 @@ namespace ImGuiGui {
                     std::string p1Name = CharacterSettings::GetCharacterName(p1Id);
                     std::string p2Name = CharacterSettings::GetCharacterName(p2Id);
                     const char* p1Path = GetCharacterWikiPathByID(p1Id);
-                    if (!p1Name.empty() && p1Name != "Unknown" && p1Path) {
+                    if (p1Path) {
                         std::string url = std::string("https://wiki.gbl.gg/w/Eternal_Fighter_Zero/") + p1Path;
                         ImGui::Separator();
                         ImGui::TextWrapped("P1: %s", p1Name.c_str());
                         Link("Open character wiki (P1)", url.c_str());
                     }
                     const char* p2Path = GetCharacterWikiPathByID(p2Id);
-                    if (!p2Name.empty() && p2Name != "Unknown" && p2Path) {
+                    if (p2Path) {
                         std::string url = std::string("https://wiki.gbl.gg/w/Eternal_Fighter_Zero/") + p2Path;
-                        if (p1Name.empty() || p1Name == "Unknown") ImGui::Separator();
+                        if (!p1Path) ImGui::Separator();
                         ImGui::TextWrapped("P2: %s", p2Name.c_str());
                         Link("Open character wiki (P2)", url.c_str());
                     }
@@ -1154,13 +2588,37 @@ namespace ImGuiGui {
                 }
 
                 // About (moved to end)
-                if (ImGui::BeginTabItem("About")) {
+                ImGuiTabItemFlags _setHelp3 = (rq3 == 3) ? ImGuiTabItemFlags_SetSelected : 0;
+                if (ImGui::BeginTabItem("About", nullptr, _setHelp3)) {
+                    guiState.helpSubTab = 3;
                     ImGui::SeparatorText("EFZ Training Mode");
                     ImGui::TextWrapped("Version: %s", EFZ_TRAINING_MODE_VERSION);
                     ImGui::TextWrapped("Build: %s %s", EFZ_TRAINING_MODE_BUILD_DATE, EFZ_TRAINING_MODE_BUILD_TIME);
+                    ImGui::TextWrapped("Find the newest version here:");
+                    ImGui::TextLinkOpenURL("https://github.com/Aquat1c/efz-training-mode/releases");
+                    // Show detected EfzRevival version and support status (stub)
+                    {
+                        EfzRevivalVersion rv = GetEfzRevivalVersion();
+                        const char* rvName = EfzRevivalVersionName(rv);
+                        bool supported = IsEfzRevivalVersionSupported(rv);
+                        ImGui::Dummy(ImVec2(1, 4));
+                        ImGui::SeparatorText("Game/Revival Version");
+                        ImGui::Text("Detected: %s", rvName);
+                        if (!supported) {
+                            ImGui::SameLine();
+                            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "(unsupported)");
+                            ImGui::TextDisabled("Some features are disabled. Online detection and certain functionality might be unavailable.");
+                        } else {
+                            ImGui::SameLine();
+                            ImGui::TextDisabled("(supported)");
+                        }
+                        ImGui::Dummy(ImVec2(1, 4));
+                        ImGui::SeparatorText("Compatibility");
+                        ImGui::TextWrapped("Supported EfzRevival builds: Vanilla EFZ (no Revival), EfzRevival 1.02e, 1.02f, 1.02g, 1.02h!!!, 1.02i!!!, and the verified 1.02j MinGW build.");
+                    }
                     ImGui::Dummy(ImVec2(1, 4));
                     ImGui::SeparatorText("Overview");
-                    ImGui::TextWrapped("A comprehensive training mode enhancement tool for Eternal Fighter Zero. It provides frame data analysis, RG timing, robust auto-actions, and a modern in-game ImGui overlay with live configuration.");
+                    ImGui::TextWrapped("A comprehensive training mode enhancement tool for Eternal Fighter Zero. It provides frame advantage display, ability to use macros, triggers and other features controlled by a in-game Gui overlay with live configuration.");
                     ImGui::Dummy(ImVec2(1, 4));
                     ImGui::SeparatorText("Obligatory Michiru");
                     unsigned gw = 0, gh = 0;
@@ -1174,9 +2632,7 @@ namespace ImGuiGui {
                     } else {
                         ImGui::TextDisabled("(GIF not loaded yet)");
                     }
-                    ImGui::Dummy(ImVec2(1, 6));
-                    ImGui::SeparatorText("Links");
-                    Link("GitHub repository", "https://github.com/Aquat1c/efz-training-mode");
+                    // No external links here
                     ImGui::EndTabItem();
                 }
 
@@ -1206,6 +2662,23 @@ namespace ImGuiGui {
         
         // ---------- GLOBAL SETTINGS SECTION (TOP) ----------
         // (Minagi conversion checkbox moved to Debug tab)
+
+        const bool hasMizuka =
+            p1CharID == CHAR_ID_MIZUKA || p2CharID == CHAR_ID_MIZUKA;
+        if (hasMizuka) {
+            hasFeatures = true;
+
+            ImGui::SeparatorText("Mizuka Notes Display");
+            bool mizukaNoteRanges = Config::GetSettings().collisionDisplayNagamoriRanges;
+            if (ImGui::Checkbox("Note Trigger Ranges (Mizuka)", &mizukaNoteRanges)) {
+                Config::SetSetting("General", "collisionDisplayNagamoriRanges", mizukaNoteRanges ? "1" : "0");
+            }
+            bool mizukaAffectedNotes = Config::GetSettings().collisionDisplayNagamoriAffected;
+            if (ImGui::Checkbox("Affected Notes (Mizuka)", &mizukaAffectedNotes)) {
+                Config::SetSetting("General", "collisionDisplayNagamoriAffected", mizukaAffectedNotes ? "1" : "0");
+            }
+            ImGui::TextDisabled("Uses Display Overlays > Projectile Interactions as the master switch.");
+        }
         
         // Ikumi - Infinite Blood Mode
         if (p1CharID == CHAR_ID_IKUMI || p2CharID == CHAR_ID_IKUMI) {
@@ -1227,7 +2700,28 @@ namespace ImGuiGui {
                 ImGui::EndTooltip();
             }
         }
-        
+
+        // Shiori - Infinite Shield (reuses Ikumi's +0x314C resource slot)
+        if (p1CharID == CHAR_ID_SHIORI || p2CharID == CHAR_ID_SHIORI) {
+            hasFeatures = true;
+
+            bool infiniteShield = guiState.localData.infiniteShioriShield;
+            if (ImGui::Checkbox("Infinite Shield (Shiori)", &infiniteShield)) {
+                guiState.localData.infiniteShioriShield = infiniteShield;
+            }
+
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered()) {
+                ImGui::BeginTooltip();
+                ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
+                ImGui::TextUnformatted("Freezes Shiori's 5S shield gauge so the shield never depletes.\n"
+                                       "This patch is only applied in Practice Mode.");
+                ImGui::PopTextWrapPos();
+                ImGui::EndTooltip();
+            }
+        }
+
         // Misuzu - Infinite Feather Mode
         if (p1CharID == CHAR_ID_MISUZU || p2CharID == CHAR_ID_MISUZU) {
             hasFeatures = true;
@@ -1281,11 +2775,12 @@ namespace ImGuiGui {
             ImGui::Separator();
             
             // Debug info: enforcement is inline via FrameDataMonitor at ~16 Hz
-            if (guiState.localData.infiniteBloodMode || guiState.localData.infiniteFeatherMode ||
+            if (guiState.localData.infiniteBloodMode || guiState.localData.infiniteShioriShield ||
+                guiState.localData.infiniteFeatherMode ||
                 guiState.localData.infiniteMishioElement || guiState.localData.infiniteMishioAwakened ||
                 guiState.localData.p1RumiInfiniteShinai || guiState.localData.p2RumiInfiniteShinai ||
                 guiState.localData.p1RumiInfiniteKimchi || guiState.localData.p2RumiInfiniteKimchi) {
-                ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "Enforcement: inline (~16 Hz)");
+                ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "Infinite mode is active.");
             }
             
             ImGui::Separator();
@@ -1417,7 +2912,6 @@ namespace ImGuiGui {
             }
             if (!p1Awakened) {
                 ImGui::EndDisabled();
-                ImGui::SameLine();
                 ImGui::TextDisabled("(set Element to Awakened to edit)");
             }
         }
@@ -1435,7 +2929,7 @@ namespace ImGuiGui {
                 guiState.localData.p1AkikoBulletCycle = bc1;
             }
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Sequence advances on use. Value is shared across A and B: A then B yields Egg→Radish for 0, etc.");
+                ImGui::SetTooltip("Sequence advances on use. Value is shared across A and B: A then B yields Egg->Radish for 0, etc.");
             }
             bool freeze1 = guiState.localData.p1AkikoFreezeCycle;
             if (ImGui::Checkbox("Freeze bullet cycle##p1Akiko", &freeze1)) {
@@ -1455,7 +2949,7 @@ namespace ImGuiGui {
             if (ImGui::Checkbox("Infinite timeslow (freeze 000)##p1Akiko", &inf1)) {
                 guiState.localData.p1AkikoInfiniteTimeslow = inf1;
             }
-            ImGui::TextDisabled("(Akiko: bullet routes and clock-slow; 'Infinite' now freezes the XYZ digits to 000)");
+            // ImGui::TextDisabled("(Akiko: bullet routes and clock-slow; 'Infinite' now freezes the XYZ digits to 000)");
     }
         // P1 Mai (Kawasumi) Settings
         else if (p1CharID == CHAR_ID_MAI) {
@@ -1496,7 +2990,7 @@ namespace ImGuiGui {
             bool noCD1 = guiState.localData.p1MaiNoChargeCD;
             if (ImGui::Checkbox("No CD (fast charge)##P1MaiNoCD", &noCD1)) guiState.localData.p1MaiNoChargeCD = noCD1;
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Effective only while Charging (status 3): forces charge timer to 1 each tick.");
-            ImGui::TextDisabled("(Mai: status @0x3144, multi-timer @0x3148 - meaning depends on status)");
+            //ImGui::TextDisabled("(Mai: status @0x3144, multi-timer @0x3148 - meaning depends on status)");
             // Ghost coordinate edit controls
             double setGX = guiState.localData.p1MaiGhostSetX;
             double setGY = guiState.localData.p1MaiGhostSetY;
@@ -1546,7 +3040,7 @@ namespace ImGuiGui {
             if (ImGui::Button("Zero##P1KanoMagic")) { guiState.localData.p1KanoMagic = 0; }
             bool lock = guiState.localData.p1KanoLockMagic;
             if (ImGui::Checkbox("Lock magic##p1Kano", &lock)) { guiState.localData.p1KanoLockMagic = lock; }
-            ImGui::TextDisabled("(Kano: magic meter at +0x3150)");
+            //ImGui::TextDisabled("(Kano: magic meter at +0x3150)");
     }
         // P1 Nayuki (Awake) Settings
         else if (p1CharID == CHAR_ID_NAYUKIB) {
@@ -1560,7 +3054,7 @@ namespace ImGuiGui {
             }
             bool inf = guiState.localData.p1NayukiInfiniteSnow;
             if (ImGui::Checkbox("Infinite timer##p1Nayuki", &inf)) guiState.localData.p1NayukiInfiniteSnow = inf;
-            ImGui::TextDisabled("(Nayuki: snowbunnies timer at +0x3150)");
+            //ImGui::TextDisabled("(Nayuki: snowbunnies timer at +0x3150)");
     }
         // P1 Mio Settings
         else if (p1CharID == CHAR_ID_MIO) {
@@ -1575,7 +3069,7 @@ namespace ImGuiGui {
             if (ImGui::Checkbox("Lock stance##p1Mio", &lock)) {
                 guiState.localData.p1MioLockStance = lock;
             }
-            ImGui::TextDisabled("(Mio training helpers)");
+            //ImGui::TextDisabled("(Mio training helpers)");
     }
 
         // P1 Neyuki (Sleepy Nayuki) Settings
@@ -1586,16 +3080,108 @@ namespace ImGuiGui {
             if (ImGui::SliderInt("##P1NeyukiJam", &jam, 0, NEYUKI_JAM_COUNT_MAX)) {
                 guiState.localData.p1NeyukiJamCount = jam;
             }
-            ImGui::TextDisabled("(Neyuki only)");
+            bool lockJam = guiState.localData.p1NeyukiLockJam;
+            if (ImGui::Checkbox("Lock Jam (restore on wakeup/neutral)##p1Neyuki", &lockJam)) {
+                guiState.localData.p1NeyukiLockJam = lockJam;
+            }
+            //ImGui::TextDisabled("(Neyuki only)");
     }
 
         // P1 Doppel (ExNanase) Settings
         else if (p1CharID == CHAR_ID_EXNANASE) {
             bool enlightened = guiState.localData.p1DoppelEnlightened;
-            if (ImGui::Checkbox("Enlightened (Final Memory)##p1Doppel", &enlightened)) {
+            if (ImGui::Checkbox("Enlightened (Gold Doppel)##p1Doppel", &enlightened)) {
                 guiState.localData.p1DoppelEnlightened = enlightened;
             }
-            ImGui::TextDisabled("(sets the FM-ready flag for testing)");
+            //ImGui::TextDisabled("(sets the FM-ready flag for testing)");
+
+            // Opponent escape behaviour for Doppel's command-throw follow-ups.
+            // Lives in Doppel's section because it is driven from Doppel's side,
+            // but what it changes is how the OPPONENT gets out.
+            ImGui::Separator();
+            ImGui::TextUnformatted("Opponent escape from her throw follow-ups:");
+            const char* doppelTechItems1[] = { "Off", "Never", "Tech B", "Tech C", "Always", "Random" };
+            int techMode = guiState.localData.p1DoppelTechMode;
+            techMode = CLAMP(techMode, 0, 5);
+            ImGui::Text("Follow-Up Tech:");
+            if (ImGui::Combo("##p1DoppelTechMode", &techMode, doppelTechItems1, IM_ARRAYSIZE(doppelTechItems1))) {
+                guiState.localData.p1DoppelTechMode = techMode;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Decides how the opponent escapes Doppel's throw follow-ups.\n"
+                    "Off: nothing is forced - the opponent's own input decides, whether that is a player, a recording, or the CPU.\n"
+                    "Never: the opponent cannot escape at the stages selected below, so those follow-ups always connect.\n"
+                    "Tech B: escapes the B follow-ups (Maiden Fuji Yama, Exploding Inner-Soul Fist, Falling Maiden, Maiden Volcannon).\n"
+                    "Tech C: escapes the A follow-ups (Maiden Crash, Relentless Granite-Breaking Barrage, Maiden Finger, Human Floor-Burning Polisher).\n"
+                    "Always: escapes whichever follow-up Doppel actually goes for.\n"
+                    "Random: picks between the B and C escape once per follow-up.\n"
+                    "If the opponent gets their own escape in first, their choice wins. The grab itself and the Automatic Follow-up can never be escaped.");
+            }
+            const char* doppelStageItems1[] = { "All", "Stage 1", "Stage 2", "Stage 3" };
+            int techStage = guiState.localData.p1DoppelTechStage;
+            techStage = CLAMP(techStage, 0, 3);
+            ImGui::Text("Tech Stage:");
+            if (ImGui::Combo("##p1DoppelTechStage", &techStage, doppelStageItems1, IM_ARRAYSIZE(doppelStageItems1))) {
+                guiState.localData.p1DoppelTechStage = techStage;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Picks where the escape is allowed. All covers every stage.\n"
+                    "Stage 1 is the capture itself; escaping there stops Maiden Crash and Maiden Fuji Yama.\n"
+                    "Stage 2 is Maiden Crash; escaping there stops Relentless Granite-Breaking Barrage and Exploding Inner-Soul Fist.\n"
+                    "Stage 3 is those two supers; escaping there stops Maiden Finger, Falling Maiden, Human Floor-Burning Polisher and Maiden Volcannon.\n"
+                    "Outside the chosen stage the opponent escapes only if they input it themselves.");
+            }
+
+        }
+    // P1 Sayuri Kurata Settings
+    else if (p1CharID == CHAR_ID_SAYURI) {
+            // The remembered-move list is per-opponent, so it is rebuilt in the
+            // SayuriCounter module and shared with the custom menu rather than
+            // being built a second time here.
+            SayuriCounter::RefreshMoveChoices();
+            ImGui::TextUnformatted("Counter memory:");
+            int sayuriMem1 = SayuriCounter::ValidateChoiceIndex(1, guiState.localData.p1SayuriMemoryChoice);
+            guiState.localData.p1SayuriMemoryChoice = sayuriMem1;
+            ImGui::Text("Remembered Move:");
+            if (ImGui::Combo("##p1SayuriMemory", &sayuriMem1,
+                             SayuriCounter::MoveChoiceItems(1),
+                             SayuriCounter::MoveChoiceCount(1))) {
+                guiState.localData.p1SayuriMemoryChoice = sayuriMem1;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "The attack Sayuri has countered and is waiting for.\n"
+                    "Whenever she blocks that attack standing or crouching she flashes white, and A, B or C cuts straight out of the blockstun into Magical Cutter.\n"
+                    "Off: nothing is forced - only her own counter loads it.\n"
+                    "Nothing: keeps it empty, for practising the bait.\n"
+                    "Last Blocked: keeps loading whatever she just blocked, so it is ready the next time that move comes out.\n"
+                    "Any move from the list: stands in for landing the counter on it, and holds it there so a stray counter cannot replace it.\n"
+                    "The list is the current opponent's moves and is rebuilt when they change.\n"
+                    "A dummy Sayuri on auto-block will keep loading and arming on her own.\n"
+                    "The cut-out needs a fresh press - a button already held through the block freeze produces nothing, so let go and press again.\n"
+                    "It stops working once Akiko's debuff has stacked up on her.");
+            }
+            if (!SayuriCounter::OpponentListAvailable(1)) {
+                ImGui::TextDisabled("No move list for this opponent. Last Blocked still works.");
+            }
+            if (SayuriCounter::MoveListTruncated(1)) {
+                ImGui::TextDisabled("Some of this opponent's moves are not listed.");
+            }
+            const char* sayuriCutterItems1[] = { "Normal", "Always Ready" };
+            int sayuriCutter1 = guiState.localData.p1SayuriCutterMode;
+            sayuriCutter1 = CLAMP(sayuriCutter1, 0, 1);
+            ImGui::Text("Magical Cutter:");
+            if (ImGui::Combo("##p1SayuriCutter", &sayuriCutter1, sayuriCutterItems1, IM_ARRAYSIZE(sayuriCutterItems1))) {
+                guiState.localData.p1SayuriCutterMode = sayuriCutter1;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Normal: only the move she remembers opens the cut-out window.\n"
+                    "Always Ready: every standing or crouching block opens it, whatever she remembers, so you can drill the reaction with no setup.\n"
+                    "Air blocking never opens the window, and it stops working once Akiko's debuff has stacked up on her.");
+            }
         }
     // P1 Nanase (Rumi) Settings
     else if (p1CharID == CHAR_ID_NANASE) {
@@ -1625,7 +3211,7 @@ namespace ImGuiGui {
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("When enabled, keeps Shinai equipped by forcing mode back to Shinai after specials/supers that drop it. Only applies when mode is Shinai.");
             }
-            ImGui::TextDisabled("(Switch carefully during idle)");
+            //ImGui::TextDisabled("(Switch carefully during idle)");
 
             ImGui::Separator();
             ImGui::Text("Final Memory (Kimchi):");
@@ -1654,7 +3240,7 @@ namespace ImGuiGui {
             if (ImGui::Checkbox("Always readied##p1Minagi", &readied1)) {
                 guiState.localData.p1MinagiAlwaysReadied = readied1;
             }
-            ImGui::TextDisabled("(Sets Michiru to ID 401 when idle/unreadied; Practice only)");
+            ImGui::TextDisabled("(Sets Michiru to Readied stance when idle/unreadied; Practice only)");
             // Michiru position override controls
             double setMX = guiState.localData.p1MinagiPuppetSetX;
             double setMY = guiState.localData.p1MinagiPuppetSetY;
@@ -1806,7 +3392,7 @@ namespace ImGuiGui {
                 // No cap: write raw value as requested
                 guiState.localData.p2MisuzuPoisonLevel = p2PoisonLvl;
             }
-            ImGui::TextDisabled("(Misuzu: feathers @+0x3148, poison timer @+0x345C, level @+0x3460)");
+            //ImGui::TextDisabled("(Misuzu: feathers @+0x3148, poison timer @+0x345C, level @+0x3460)");
         }
     // P2 Mishio Settings
         else if (p2CharID == CHAR_ID_MISHIO) {
@@ -1829,7 +3415,6 @@ namespace ImGuiGui {
             }
             if (!p2Awakened) {
                 ImGui::EndDisabled();
-                ImGui::SameLine();
                 ImGui::TextDisabled("(set Element to Awakened to edit)");
             }
     }
@@ -1847,7 +3432,7 @@ namespace ImGuiGui {
                 guiState.localData.p2AkikoBulletCycle = bc2;
             }
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Sequence advances on use. Value is shared across A and B: A then B yields Egg→Radish for 0, etc.");
+                ImGui::SetTooltip("Sequence advances on use. Value is shared across A and B: A then B yields Egg->Radish for 0, etc.");
             }
             bool freeze2 = guiState.localData.p2AkikoFreezeCycle;
             if (ImGui::Checkbox("Freeze bullet cycle##p2Akiko", &freeze2)) {
@@ -1871,7 +3456,7 @@ namespace ImGuiGui {
             if (ImGui::Checkbox("Infinite timeslow (freeze 000)##p2Akiko", &inf2)) {
                 guiState.localData.p2AkikoInfiniteTimeslow = inf2;
             }
-            ImGui::TextDisabled("(Akiko: bullet routes and clock-slow; 'Infinite' now freezes the XYZ digits to 000)");
+            // ImGui::TextDisabled("(Akiko: bullet routes and clock-slow; 'Infinite' now freezes the XYZ digits to 000)");
     }
         // P2 Mai (Kawasumi) Settings
         else if (p2CharID == CHAR_ID_MAI) {
@@ -1977,7 +3562,7 @@ namespace ImGuiGui {
             if (ImGui::Checkbox("Lock stance##p2Mio", &lock2)) {
                 guiState.localData.p2MioLockStance = lock2;
             }
-            ImGui::TextDisabled("(Mio: stance byte at +0x3150, 0=Short,1=Long)");
+            //ImGui::TextDisabled("(Mio: stance byte at +0x3150, 0=Short,1=Long)");
     }
 
         // P2 Neyuki (Sleepy Nayuki) Settings
@@ -1988,7 +3573,11 @@ namespace ImGuiGui {
             if (ImGui::SliderInt("##P2NeyukiJam", &jam2, 0, NEYUKI_JAM_COUNT_MAX)) {
                 guiState.localData.p2NeyukiJamCount = jam2;
             }
-            ImGui::TextDisabled("(Neyuki only)");
+            bool lockJam2 = guiState.localData.p2NeyukiLockJam;
+            if (ImGui::Checkbox("Lock Jam (restore on wakeup/neutral)##p2Neyuki", &lockJam2)) {
+                guiState.localData.p2NeyukiLockJam = lockJam2;
+            }
+            //ImGui::TextDisabled("(Neyuki only)");
     }
 
         // P2 Doppel (ExNanase) Settings
@@ -1998,6 +3587,94 @@ namespace ImGuiGui {
                 guiState.localData.p2DoppelEnlightened = enlightened2;
             }
             ImGui::TextDisabled("(sets internal flag to 1 when checked, 0 when unchecked)");
+
+            // Opponent escape behaviour for Doppel's command-throw follow-ups.
+            // Lives in Doppel's section because it is driven from Doppel's side,
+            // but what it changes is how the OPPONENT gets out.
+            ImGui::Separator();
+            ImGui::TextUnformatted("Opponent escape from her throw follow-ups:");
+            const char* doppelTechItems2[] = { "Off", "Never", "Tech B", "Tech C", "Always", "Random" };
+            int techMode2 = guiState.localData.p2DoppelTechMode;
+            techMode2 = CLAMP(techMode2, 0, 5);
+            ImGui::Text("Follow-Up Tech:");
+            if (ImGui::Combo("##p2DoppelTechMode", &techMode2, doppelTechItems2, IM_ARRAYSIZE(doppelTechItems2))) {
+                guiState.localData.p2DoppelTechMode = techMode2;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Decides how the opponent escapes Doppel's throw follow-ups.\n"
+                    "Off: nothing is forced - the opponent's own input decides, whether that is a player, a recording, or the CPU.\n"
+                    "Never: the opponent cannot escape at the stages selected below, so those follow-ups always connect.\n"
+                    "Tech B: escapes the B follow-ups (Maiden Fuji Yama, Exploding Inner-Soul Fist, Falling Maiden, Maiden Volcannon).\n"
+                    "Tech C: escapes the A follow-ups (Maiden Crash, Relentless Granite-Breaking Barrage, Maiden Finger, Human Floor-Burning Polisher).\n"
+                    "Always: escapes whichever follow-up Doppel actually goes for.\n"
+                    "Random: picks between the B and C escape once per follow-up.\n"
+                    "If the opponent gets their own escape in first, their choice wins. The grab itself and the Automatic Follow-up can never be escaped.");
+            }
+            const char* doppelStageItems2[] = { "All", "Stage 1", "Stage 2", "Stage 3" };
+            int techStage2 = guiState.localData.p2DoppelTechStage;
+            techStage2 = CLAMP(techStage2, 0, 3);
+            ImGui::Text("Tech Stage:");
+            if (ImGui::Combo("##p2DoppelTechStage", &techStage2, doppelStageItems2, IM_ARRAYSIZE(doppelStageItems2))) {
+                guiState.localData.p2DoppelTechStage = techStage2;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Picks where the escape is allowed. All covers every stage.\n"
+                    "Stage 1 is the capture itself; escaping there stops Maiden Crash and Maiden Fuji Yama.\n"
+                    "Stage 2 is Maiden Crash; escaping there stops Relentless Granite-Breaking Barrage and Exploding Inner-Soul Fist.\n"
+                    "Stage 3 is those two supers; escaping there stops Maiden Finger, Falling Maiden, Human Floor-Burning Polisher and Maiden Volcannon.\n"
+                    "Outside the chosen stage the opponent escapes only if they input it themselves.");
+            }
+
+        }
+    // P2 Sayuri Kurata Settings
+    else if (p2CharID == CHAR_ID_SAYURI) {
+            // The remembered-move list is per-opponent, so it is rebuilt in the
+            // SayuriCounter module and shared with the custom menu rather than
+            // being built a second time here.
+            SayuriCounter::RefreshMoveChoices();
+            ImGui::TextUnformatted("Counter memory:");
+            int sayuriMem2 = SayuriCounter::ValidateChoiceIndex(2, guiState.localData.p2SayuriMemoryChoice);
+            guiState.localData.p2SayuriMemoryChoice = sayuriMem2;
+            ImGui::Text("Remembered Move:");
+            if (ImGui::Combo("##p2SayuriMemory", &sayuriMem2,
+                             SayuriCounter::MoveChoiceItems(2),
+                             SayuriCounter::MoveChoiceCount(2))) {
+                guiState.localData.p2SayuriMemoryChoice = sayuriMem2;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "The attack Sayuri has countered and is waiting for.\n"
+                    "Whenever she blocks that attack standing or crouching she flashes white, and A, B or C cuts straight out of the blockstun into Magical Cutter.\n"
+                    "Off: nothing is forced - only her own counter loads it.\n"
+                    "Nothing: keeps it empty, for practising the bait.\n"
+                    "Last Blocked: keeps loading whatever she just blocked, so it is ready the next time that move comes out.\n"
+                    "Any move from the list: stands in for landing the counter on it, and holds it there so a stray counter cannot replace it.\n"
+                    "The list is the current opponent's moves and is rebuilt when they change.\n"
+                    "A dummy Sayuri on auto-block will keep loading and arming on her own.\n"
+                    "The cut-out needs a fresh press - a button already held through the block freeze produces nothing, so let go and press again.\n"
+                    "It stops working once Akiko's debuff has stacked up on her.");
+            }
+            if (!SayuriCounter::OpponentListAvailable(2)) {
+                ImGui::TextDisabled("No move list for this opponent. Last Blocked still works.");
+            }
+            if (SayuriCounter::MoveListTruncated(2)) {
+                ImGui::TextDisabled("Some of this opponent's moves are not listed.");
+            }
+            const char* sayuriCutterItems2[] = { "Normal", "Always Ready" };
+            int sayuriCutter2 = guiState.localData.p2SayuriCutterMode;
+            sayuriCutter2 = CLAMP(sayuriCutter2, 0, 1);
+            ImGui::Text("Magical Cutter:");
+            if (ImGui::Combo("##p2SayuriCutter", &sayuriCutter2, sayuriCutterItems2, IM_ARRAYSIZE(sayuriCutterItems2))) {
+                guiState.localData.p2SayuriCutterMode = sayuriCutter2;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Normal: only the move she remembers opens the cut-out window.\n"
+                    "Always Ready: every standing or crouching block opens it, whatever she remembers, so you can drill the reaction with no setup.\n"
+                    "Air blocking never opens the window, and it stops working once Akiko's debuff has stacked up on her.");
+            }
         }
     // P2 Nanase (Rumi) Settings
     else if (p2CharID == CHAR_ID_NANASE) {
@@ -2055,7 +3732,7 @@ namespace ImGuiGui {
             if (ImGui::Checkbox("Always readied##p2Minagi", &readied2)) {
                 guiState.localData.p2MinagiAlwaysReadied = readied2;
             }
-            ImGui::TextDisabled("(Sets Michiru to ID 401 when idle/unreadied; Practice only)");
+            // ImGui::TextDisabled("(Sets Michiru to ID 401 when idle/unreadied; Practice only)");
             // Michiru position override controls (P2)
             double setMX2 = guiState.localData.p2MinagiPuppetSetX;
             double setMY2 = guiState.localData.p2MinagiPuppetSetY;
@@ -2116,30 +3793,30 @@ namespace ImGuiGui {
         ImGui::Separator();
         ImGui::TextWrapped(
             "Character-specific settings allow you to modify special parameters unique to each character.\n"
-            "Supported: Ikumi (Blood/Genocide), Misuzu (Feathers), Mishio (Element/Awakened), Rumi (Stance, Kimchi), Akiko (Bullet/Time-Slow), Neyuki (Jam 0-9), Kano (Magic), Mio (Stance), Doppel (Enlightened), Mai (Ghost/Awakening), Minagi (Michiru debug + Always readied)");
+            "Supported: Ikumi (Blood/Genocide), Misuzu (Feathers), Mishio (Element/Awakened), Rumi (Stance, Kimchi), Akiko (Bullet/Time-Slow), Neyuki (Jam 0-9), Kano (Magic), Sayuri (Remembered Move/Magical Cutter), Mio (Stance), Doppel (Enlightened(Gold), Follow-Up Tech/Tech Stage), Mai (Ghost/Awakening), Minagi (Michiru position control + Always readied)");
     }
     
-    // Add this new function to the ImGuiGui namespace:
     void RenderDebugInputTab() {
+        // (Engine Regen / Continuous Recovery UI removed from Debug menu)
+        ImGui::Separator();
         // Practice Switch Players control
         if (GetCurrentGameMode() == GameMode::Practice) {
             ImGui::SeparatorText("Switch Players (Practice)");
-            int curLocal = -1;
-            PauseIntegration::EnsurePracticePointerCapture();
-            if (void* p = PauseIntegration::GetPracticeControllerPtr()) {
-                SafeReadMemory((uintptr_t)p + PRACTICE_OFF_LOCAL_SIDE_IDX, &curLocal, sizeof(curLocal));
-            }
-            if (ImGui::Button("Toggle Switch Players")) {
+            int curLocal = SwitchPlayers::GetLocalSide();
+            // Disabled while a macro is active: a swap mid-replay hands the human's new
+            // slot to the macro's poll override and restores stale CPU flags afterwards.
+            const bool switchBlockedByMacro = MacroController::GetState() != MacroController::State::Idle;
+            if (switchBlockedByMacro) ImGui::BeginDisabled();
+            const bool toggleSwitchClicked = ImGui::Button("Toggle Switch Players");
+            if (switchBlockedByMacro) ImGui::EndDisabled();
+            if (toggleSwitchClicked) {
                 bool ok = SwitchPlayers::ToggleLocalSide();
                 if (!ok) {
                     LogOut("[DEBUG/UI] SwitchPlayers toggle failed (Practice controller not ready?)", true);
                     DirectDrawHook::AddMessage("Switch Players: FAILED", "SYSTEM", RGB(255,100,100), 1500, 0, 100);
                 } else {
                     // Re-read after toggle for display
-                    curLocal = -1;
-                    if (void* p2 = PauseIntegration::GetPracticeControllerPtr()) {
-                        SafeReadMemory((uintptr_t)p2 + PRACTICE_OFF_LOCAL_SIDE_IDX, &curLocal, sizeof(curLocal));
-                    }
+                    curLocal = SwitchPlayers::GetLocalSide();
                     DirectDrawHook::AddMessage(curLocal == 0 ? "Local: P1" : (curLocal == 1 ? "Local: P2" : "Local: ?"),
                                                "SYSTEM", RGB(100,255,100), 1500, 0, 100);
                 }
@@ -2214,17 +3891,21 @@ namespace ImGuiGui {
         // Final Memory (FM) tools
         ImGui::Text("Final Memory Tools:");
         if (ImGui::Button("Apply FM HP bypass (allow FM at any HP)")) {
-            // Call runtime patcher once; log summary only
+            // Mark the local preference enabled and sync immediately if the current mode is safe.
             static uint64_t s_lastPatchLogTick = 0;
             int sites = 0;
             try {
-                sites = ::ApplyFinalMemoryHPBypass();
+                sites = ::SetFinalMemoryBypass(true);
             } catch (...) {
-                LogOut("[IMGUI][FM] Exception while applying FM bypass.", true);
+                LogOut("[IMGUI][FM] Exception while enabling FM bypass.", true);
             }
-            uint64_t now = GetTickCount64();
+            uint64_t now = XPCompat::GetTickCount64Compat();
             if (now - s_lastPatchLogTick > 2000) { // throttle to 2s
-                LogOut(std::string("[IMGUI][FM] FM HP bypass applied. Sites patched: ") + std::to_string(sites), true);
+                LogOut(
+                    std::string("[IMGUI][FM] FM HP bypass requested. Runtime changes: ")
+                    + std::to_string(sites)
+                    + " installed=" + (IsFinalMemoryBypassInstalled() ? "1" : "0"),
+                    true);
                 s_lastPatchLogTick = now;
             }
         }
@@ -2233,6 +3914,15 @@ namespace ImGuiGui {
         if (ImGui::Checkbox("Show RG debug toasts", &showRGToasts)) {
             g_ShowRGDebugToasts.store(showRGToasts);
         }
+        bool logGenericPadInput = XInputShim::g_LogGenericPadInputDebug.load();
+        if (ImGui::Checkbox("Log generic controller input", &logGenericPadInput)) {
+            XInputShim::g_LogGenericPadInputDebug.store(logGenericPadInput);
+        }
+        bool logDetailedFrameAdv = g_deepFrameAdvDebug.load();
+        if (ImGui::Checkbox("Log detailed frame advantage", &logDetailedFrameAdv)) {
+            g_deepFrameAdvDebug.store(logDetailedFrameAdv);
+        }
+        ImGui::TextDisabled("These logging toggles are runtime-only and reset on restart.");
 
         // Always RG toggle moved to Game Settings
 
@@ -2255,12 +3945,15 @@ namespace ImGuiGui {
             /*if (ImGui::Button("Log BGM State")) {
                 LogBGMState(gameStatePtr);
             }*/
-            static int bgmSlot = 0;
-            ImGui::InputInt("Set BGM Slot (index)", &bgmSlot);
-            if (ImGui::Button("Set BGM Slot")) {
-                PlayBGM(gameStatePtr, static_cast<unsigned short>(bgmSlot));
+            static int bgmTrack = 0;
+            ImGui::InputInt("Set BGM Track", &bgmTrack);
+            if (ImGui::Button("Play BGM Track")) {
+                PlayBGM(gameStatePtr, static_cast<unsigned short>(bgmTrack));
             }
-            ImGui::Text("Current BGM Slot: %d", GetBGMSlot(gameStatePtr));
+            const unsigned short observedTrack = GetLastBgmTrack();
+            if (observedTrack == 0xFFFFu) ImGui::Text("Current BGM Track: unknown");
+            else ImGui::Text("Current BGM Track: %u", static_cast<unsigned>(observedTrack));
+            ImGui::Text("Current BGM Buffer: %d", GetBGMBufferIndex(gameStatePtr));
             ImGui::Text("Current BGM Volume: %d", GetBGMVolume(gameStatePtr));
         } else {
             ImGui::Text("Game state pointer not available.");
@@ -2306,6 +3999,26 @@ namespace ImGuiGui {
             }
         }
 
+        // RF Freeze Status & Controls
+        ImGui::Separator();
+        ImGui::SeparatorText("RF Freeze Status");
+        auto renderFreezeRow = [&](int player){
+            bool active=false, colorManaged=false, colorBlue=false; double value=0.0;
+            if (!GetRFFreezeStatus(player, active, value, colorManaged, colorBlue)) return;
+            const char* side = (player==1? "P1" : "P2");
+            ImGui::Text("%s: %s", side, active?"Active":"Inactive");
+            if (active) {
+                ImGui::SameLine(); ImGui::TextDisabled("RF=%.1f", (float)value);
+                ImGui::SameLine(); ImGui::TextDisabled("ColorLock=%s%s", colorManaged?"On":"Off", (colorManaged? (colorBlue?"(Blue)":"(Red)") : ""));
+                RFFreezeOrigin origin = GetRFFreezeOrigin(player);
+                const char* olabel = (origin==RFFreezeOrigin::ManualUI?"Manual UI":(origin==RFFreezeOrigin::ContinuousRecovery?"Continuous Recovery":(origin==RFFreezeOrigin::Other?"Other":"Unknown")));
+                ImGui::SameLine(); ImGui::TextDisabled("Source=%s", olabel);
+                ImGui::SameLine(); if (ImGui::SmallButton(player==1?"Cancel##rf_cancel_p1":"Cancel##rf_cancel_p2")) { StopRFFreezePlayer(player); }
+            }
+        };
+        renderFreezeRow(1);
+        renderFreezeRow(2);
+
         // Minagi debug controls: conversion toggle shown only when Minagi is present
         /*if (guiState.localData.p1CharID == CHAR_ID_MINAGI || guiState.localData.p2CharID == CHAR_ID_MINAGI) {
             ImGui::SeparatorText("Minagi Control");
@@ -2349,11 +4062,50 @@ namespace ImGuiGui {
 
         // Refresh data once when UI becomes visible; avoid continuous auto-refresh to reduce work
         static bool lastVisible = false;
+        static bool lastCharsInitialized = false;
         bool currentVisible = ImGuiImpl::IsVisible();
+        bool charsInitializedNow = AreCharactersInitialized();
         if (currentVisible && !lastVisible) {
+            // Refresh once on menu open (parses character names/IDs
+            // and reads character-specific values via
+            // CharacterSettings::ReadCharacterValues).
             RefreshLocalData();
+        } else if (currentVisible && charsInitializedNow && !lastCharsInitialized) {
+            // Menu is already open, but characters just became
+            // available (e.g. re-entered Practice from character
+            // select). Re-run the ImGui-side parsing so the
+            // Character tab uses up-to-date IDs/values.
+            RefreshLocalData();
+
+            // On menu open, update IC color ONCE if not managed by RF Freeze color lock or Continuous Recovery
+            // This ensures the game color matches the last applied Values tab selection without continuous locking.
+            auto crColorManaged = [&](int player)->bool {
+                if (player == 1) {
+                    if (!displayData.p1ContinuousRecoveryEnabled) return false;
+                    if (displayData.p1RecoveryRfMode == 3 || displayData.p1RecoveryRfMode == 4) return true; // Red presets force Red later
+                    if (displayData.p1RecoveryRfMode == 5 && displayData.p1RecoveryRfForceBlueIC) return true; // Custom+BIC forces Blue
+                    return false;
+                } else {
+                    if (!displayData.p2ContinuousRecoveryEnabled) return false;
+                    if (displayData.p2RecoveryRfMode == 3 || displayData.p2RecoveryRfMode == 4) return true;
+                    if (displayData.p2RecoveryRfMode == 5 && displayData.p2RecoveryRfForceBlueIC) return true;
+                    return false;
+                }
+            };
+            bool p1Managed = IsRFFreezeColorManaging(1) || crColorManaged(1);
+            bool p2Managed = IsRFFreezeColorManaging(2) || crColorManaged(2);
+            if (!p1Managed || !p2Managed) {
+                if (!p1Managed && !p2Managed) {
+                    SetICColorDirect(displayData.p1BlueIC, displayData.p2BlueIC);
+                } else if (!p1Managed) {
+                    SetICColorPlayer(1, displayData.p1BlueIC);
+                } else if (!p2Managed) {
+                    SetICColorPlayer(2, displayData.p2BlueIC);
+                }
+            }
         }
         lastVisible = currentVisible;
+        lastCharsInitialized = charsInitializedNow;
 
     // Set window position and size
         // Use Appearing so the menu always resets to a visible spot when reopened (prevents off-screen in fullscreen)
@@ -2365,10 +4117,14 @@ namespace ImGuiGui {
 
         // Main window
         // Allow navigation (keyboard/gamepad), disable collapse and saved settings to avoid off-screen positions
+        if (s_requestInitialNavFocus) {
+            ImGui::SetNextWindowFocus();
+        }
         ImGuiWindowFlags winFlags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings;
     if (ImGui::Begin("EFZ Training Mode", nullptr, winFlags)) {
             // Text already crisp-scaled via font atlas; keep per-window font scale at 1.0
             ImGui::SetWindowFontScale(1.0f);
+            ClampMainWindowToClientBounds();
 
         // Provide current overlay center for virtual cursor recenters (middle click / L3)
         ImVec2 wpos = ImGui::GetWindowPos();
@@ -2378,14 +4134,14 @@ namespace ImGuiGui {
             // If input layer requested overlay focus (e.g., middle-click/L3 recenter), honor it here
             if (ImGuiImpl::ConsumeOverlayFocusRequest()) {
                 ImGui::SetWindowFocus();
-                // Place keyboard/gamepad nav at center-most item by setting default focus to the window
-                ImGui::SetItemDefaultFocus();
+                s_requestInitialNavFocus = true;
             }
 
-            // Check if a specific tab has been requested
+            // Capture any requested top-level tab selection; we'll apply it via SetSelected flags below
+            int requestedTopTab = -1;
             if (guiState.requestedTab >= 0) {
-                guiState.currentTab = guiState.requestedTab;
-                guiState.requestedTab = -1; // Reset request
+                requestedTopTab = guiState.requestedTab;
+                guiState.requestedTab = -1; // consume request
             }
             // Create a scrollable content region with a fixed-height footer for action buttons
             ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -2396,30 +4152,42 @@ namespace ImGuiGui {
             if (ImGui::BeginChild("##MainContent", ImVec2(avail.x, avail.y - footerHeight), true)) {
                 // Tab bar at the top
                 if (ImGui::BeginTabBar("##Tabs", ImGuiTabBarFlags_None)) {
+                    // Precompute selection flags for programmatic tab switching
+                    ImGuiTabItemFlags __mainFlags = (requestedTopTab == 0) ? ImGuiTabItemFlags_SetSelected : 0;
+                    ImGuiTabItemFlags __autoFlags = (requestedTopTab == 1) ? ImGuiTabItemFlags_SetSelected : 0;
+                    ImGuiTabItemFlags __settingsFlags = (requestedTopTab == 5) ? ImGuiTabItemFlags_SetSelected : 0;
+                    ImGuiTabItemFlags __charFlags = (requestedTopTab == 2) ? ImGuiTabItemFlags_SetSelected : 0;
+                    ImGuiTabItemFlags __helpFlags = ImGuiTabItemFlags_NoCloseWithMiddleMouseButton | ((requestedTopTab == 4) ? ImGuiTabItemFlags_SetSelected : 0);
+
                     // Main Menu tab
-                    if (ImGui::BeginTabItem("Main Menu")) {
+                    if (ImGui::BeginTabItem("Main Menu", nullptr, __mainFlags)) {
                         guiState.currentTab = 0;
+                        if (s_requestInitialNavFocus) {
+                            ImGui::SetKeyboardFocusHere();
+                            s_requestInitialNavFocus = false;
+                        }
                         RenderGameValuesTab();
                         ImGui::EndTabItem();
                     }
                     
-                    // Auto Action tab
-                    if (ImGui::BeginTabItem("Auto Action")) {
+                    // Auto Actions tab
+                    if (ImGui::BeginTabItem("Auto Actions", nullptr, __autoFlags)) {
                         guiState.currentTab = 1;
+                        if (s_requestInitialNavFocus) {
+                            ImGui::SetKeyboardFocusHere();
+                            s_requestInitialNavFocus = false;
+                        }
                         RenderAutoActionTab();
                         ImGui::EndTabItem();
                     }
 
-                    // Settings tab (new)
-                    if (ImGui::BeginTabItem("Settings")) {
-                        guiState.currentTab = 5;
-                        ImGuiSettings::RenderSettingsTab();
-                        ImGui::EndTabItem();
-                    }
-                    
-                    // Add Character tab; refresh character IDs once on open to avoid per-frame work
-                    if (ImGui::BeginTabItem("Character")) {
+                    // Characters tab; refresh character IDs once on open to avoid per-frame work
+                    if (ImGui::BeginTabItem("Characters", nullptr, __charFlags)) {
                         guiState.currentTab = 2;
+                        if (s_requestInitialNavFocus) {
+                            ImGui::SetKeyboardFocusHere();
+                            s_requestInitialNavFocus = false;
+                        }
                         static bool s_charTabJustOpened = false;
                         if (ImGui::IsItemActivated()) { s_charTabJustOpened = true; }
                         if (s_charTabJustOpened) {
@@ -2431,44 +4199,26 @@ namespace ImGuiGui {
                         ImGui::EndTabItem();
                     }
                     
+                    // Settings tab (moved after Characters)
+                    if (ImGui::BeginTabItem("Settings", nullptr, __settingsFlags)) {
+                        guiState.currentTab = 5;
+                        if (s_requestInitialNavFocus) {
+                            ImGui::SetKeyboardFocusHere();
+                            s_requestInitialNavFocus = false;
+                        }
+                        ImGuiSettings::RenderSettingsTab();
+                        ImGui::EndTabItem();
+                    }
+                    
                     // Debug tab moved under Settings -> Debug sub-tab
                     
                     // Help tab(s)
-                    if (ImGui::BeginTabItem("Macros")) {
-                        const auto& cfg = Config::GetSettings();
-                        ImGui::SeparatorText("Macro Controller");
-                        ImGui::Text("State: %s", MacroController::GetStatusLine().c_str());
-                        ImGui::Text("Current Slot: %d / %d", MacroController::GetCurrentSlot(), MacroController::GetSlotCount());
-                        bool empty = MacroController::IsSlotEmpty(MacroController::GetCurrentSlot());
-                        ImGui::Text("Slot Empty: %s", empty ? "Yes" : "No");
-                        // Debug stats for validation
-                        {
-                            auto stats = MacroController::GetSlotStats(MacroController::GetCurrentSlot());
-                            ImGui::SeparatorText("Slot Stats");
-                            ImGui::BulletText("Spans: %d", stats.spanCount);
-                            ImGui::BulletText("Total Ticks: %d (~%.2fs)", stats.totalTicks, stats.totalTicks / 64.0f);
-                            ImGui::BulletText("Buffer Entries: %d", stats.bufEntries);
-                            ImGui::BulletText("Buf Idx Start: %u", (unsigned)stats.bufStartIdx);
-                            ImGui::BulletText("Buf Idx End: %u", (unsigned)stats.bufEndIdx);
-                            ImGui::BulletText("Has Data: %s", stats.hasData ? "Yes" : "No");
-                        }
-                        if (ImGui::Button("Toggle Record")) { MacroController::ToggleRecord(); }
-                        ImGui::SameLine();
-                        if (ImGui::Button("Play")) { MacroController::Play(); }
-                        ImGui::SameLine();
-                        if (ImGui::Button("Stop")) { MacroController::Stop(); }
-                        if (ImGui::Button("Prev Slot")) { MacroController::PrevSlot(); }
-                        ImGui::SameLine();
-                        if (ImGui::Button("Next Slot")) { MacroController::NextSlot(); }
-                        ImGui::Spacing();
-                        ImGui::SeparatorText("Hotkeys");
-                        ImGui::BulletText("Record: %s", GetKeyName(cfg.macroRecordKey).c_str());
-                        ImGui::BulletText("Play: %s", GetKeyName(cfg.macroPlayKey).c_str());
-                        ImGui::BulletText("Next Slot: %s", GetKeyName(cfg.macroSlotKey).c_str());
-                        ImGui::EndTabItem();
-                    }
-                    if (ImGui::BeginTabItem("Help", nullptr, ImGuiTabItemFlags_NoCloseWithMiddleMouseButton)) {
+                    if (ImGui::BeginTabItem("Help", nullptr, __helpFlags)) {
                         guiState.currentTab = 4;
+                        if (s_requestInitialNavFocus) {
+                            ImGui::SetKeyboardFocusHere();
+                            s_requestInitialNavFocus = false;
+                        }
                         RenderHelpTab();
                         ImGui::EndTabItem();
                     }
@@ -2525,41 +4275,50 @@ namespace ImGuiGui {
 
     // Update RefreshLocalData to include character-specific data
     void RefreshLocalData() {
+        guiState.localData = displayData;
+
         uintptr_t base = GetEFZBase();
         if (!base) {
-            LogOut("[IMGUI] RefreshLocalData: Couldn't get base address", true);
+            LogOut("[IMGUI] RefreshLocalData: Couldn't get base address; using display defaults", true);
             return;
         }
 
         // Hard gate: don't dereference player pointers until characters are initialized
         if (!AreCharactersInitialized()) {
-            LogOut("[IMGUI] RefreshLocalData: Characters not initialized; skipping memory reads", true);
+            LogOut("[IMGUI] RefreshLocalData: Characters not initialized; using display defaults", true);
             return;
         }
 
-        // P1
-        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P1, HP_OFFSET), &guiState.localData.hp1, sizeof(int));
-        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P1, METER_OFFSET), &guiState.localData.meter1, sizeof(int));
-        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P1, RF_OFFSET), &guiState.localData.rf1, sizeof(double));
-        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P1, XPOS_OFFSET), &guiState.localData.x1, sizeof(double));
-        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P1, YPOS_OFFSET), &guiState.localData.y1, sizeof(double));
-        
-        // Read character name and ensure null-termination
-        memset(guiState.localData.p1CharName, 0, sizeof(guiState.localData.p1CharName));
-        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P1, CHARACTER_NAME_OFFSET), 
-                   guiState.localData.p1CharName, sizeof(guiState.localData.p1CharName) - 1);
-        
-        // P2
-        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P2, HP_OFFSET), &guiState.localData.hp2, sizeof(int));
-        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P2, METER_OFFSET), &guiState.localData.meter2, sizeof(int));
-        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P2, RF_OFFSET), &guiState.localData.rf2, sizeof(double));
-        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P2, XPOS_OFFSET), &guiState.localData.x2, sizeof(double));
-        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P2, YPOS_OFFSET), &guiState.localData.y2, sizeof(double));
-        
-        // Read character name and ensure null-termination
-        memset(guiState.localData.p2CharName, 0, sizeof(guiState.localData.p2CharName));
-        SafeReadMemory(ResolvePointer(base, EFZ_BASE_OFFSET_P2, CHARACTER_NAME_OFFSET), 
-                   guiState.localData.p2CharName, sizeof(guiState.localData.p2CharName) - 1);
+        // Resolve player base pointers once; avoid multiple ResolvePointer() calls per field.
+        uintptr_t p1Base = 0, p2Base = 0;
+        SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1Base, sizeof(p1Base));
+        SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2Base, sizeof(p2Base));
+        if (!p1Base || !p2Base) {
+            LogOut("[IMGUI] RefreshLocalData: Player base ptr(s) unavailable; using display defaults", true);
+            return;
+        }
+
+        // P1 reads (single pass)
+        {
+            SafeReadMemory(p1Base + HP_OFFSET, &guiState.localData.hp1, sizeof(int));
+            unsigned short m1 = 0; SafeReadMemory(p1Base + METER_OFFSET, &m1, sizeof(m1)); guiState.localData.meter1 = (int)m1;
+            SafeReadMemory(p1Base + RF_OFFSET, &guiState.localData.rf1, sizeof(double));
+            SafeReadMemory(p1Base + XPOS_OFFSET, &guiState.localData.x1, sizeof(double));
+            SafeReadMemory(p1Base + YPOS_OFFSET, &guiState.localData.y1, sizeof(double));
+            memset(guiState.localData.p1CharName, 0, sizeof(guiState.localData.p1CharName));
+            SafeReadMemory(p1Base + CHARACTER_NAME_OFFSET, guiState.localData.p1CharName, sizeof(guiState.localData.p1CharName) - 1);
+        }
+
+        // P2 reads (single pass)
+        {
+            SafeReadMemory(p2Base + HP_OFFSET, &guiState.localData.hp2, sizeof(int));
+            unsigned short m2 = 0; SafeReadMemory(p2Base + METER_OFFSET, &m2, sizeof(m2)); guiState.localData.meter2 = (int)m2;
+            SafeReadMemory(p2Base + RF_OFFSET, &guiState.localData.rf2, sizeof(double));
+            SafeReadMemory(p2Base + XPOS_OFFSET, &guiState.localData.x2, sizeof(double));
+            SafeReadMemory(p2Base + YPOS_OFFSET, &guiState.localData.y2, sizeof(double));
+            memset(guiState.localData.p2CharName, 0, sizeof(guiState.localData.p2CharName));
+            SafeReadMemory(p2Base + CHARACTER_NAME_OFFSET, guiState.localData.p2CharName, sizeof(guiState.localData.p2CharName) - 1);
+        }
 
           // Log the character names we're reading
           LogOut("[IMGUI] Read character names: P1=" + std::string(guiState.localData.p1CharName) + 
@@ -2628,16 +4387,17 @@ namespace ImGuiGui {
                std::to_string(p1ICValue) + ", P2=" + std::to_string(p2ICValue), true);
 
     // --- Sync auto-action and trigger settings from atomics into the GUI state ---
-    // Master auto-action
-    guiState.localData.autoAction = autoActionEnabled.load();
-    guiState.localData.autoActionPlayer = autoActionPlayer.load();
-
     // Per-trigger enables
     guiState.localData.triggerAfterBlock   = triggerAfterBlockEnabled.load();
     guiState.localData.triggerOnWakeup     = triggerOnWakeupEnabled.load();
     guiState.localData.triggerAfterHitstun = triggerAfterHitstunEnabled.load();
     guiState.localData.triggerAfterAirtech = triggerAfterAirtechEnabled.load();
     guiState.localData.triggerOnRG         = triggerOnRGEnabled.load();
+    guiState.localData.randomizeTriggers   = triggerRandomizeEnabled.load();
+
+    // Auto-action master/target are derived from trigger rows and local side.
+    guiState.localData.autoAction = HasAnyAutoActionTriggerEnabled(guiState.localData);
+    guiState.localData.autoActionPlayer = ResolveAutoActionTargetPlayer();
 
     // Per-trigger delays
     guiState.localData.delayAfterBlock     = triggerAfterBlockDelay.load();
@@ -2652,6 +4412,46 @@ namespace ImGuiGui {
     guiState.localData.actionAfterHitstun  = triggerAfterHitstunAction.load();
     guiState.localData.actionAfterAirtech  = triggerAfterAirtechAction.load();
     guiState.localData.actionOnRG          = triggerOnRGAction.load();
+
+    guiState.localData.chargeAfterBlock   = triggerAfterBlockCharge.load();
+    guiState.localData.chargeOnWakeup     = triggerOnWakeupCharge.load();
+    guiState.localData.chargeAfterHitstun = triggerAfterHitstunCharge.load();
+    guiState.localData.chargeAfterAirtech = triggerAfterAirtechCharge.load();
+    guiState.localData.chargeOnRG         = triggerOnRGCharge.load();
+
+    // Per-trigger multi-action pool config
+    guiState.localData.afterBlockActionPoolMask   = triggerAfterBlockActionPoolMask.load();
+    guiState.localData.onWakeupActionPoolMask     = triggerOnWakeupActionPoolMask.load();
+    guiState.localData.afterHitstunActionPoolMask = triggerAfterHitstunActionPoolMask.load();
+    guiState.localData.afterAirtechActionPoolMask = triggerAfterAirtechActionPoolMask.load();
+    guiState.localData.onRGActionPoolMask         = triggerOnRGActionPoolMask.load();
+    guiState.localData.afterBlockActionPoolMaskLo   = triggerAfterBlockActionPoolMaskLo.load();
+    guiState.localData.afterBlockActionPoolMaskHi   = triggerAfterBlockActionPoolMaskHi.load();
+    guiState.localData.onWakeupActionPoolMaskLo     = triggerOnWakeupActionPoolMaskLo.load();
+    guiState.localData.onWakeupActionPoolMaskHi     = triggerOnWakeupActionPoolMaskHi.load();
+    guiState.localData.afterHitstunActionPoolMaskLo = triggerAfterHitstunActionPoolMaskLo.load();
+    guiState.localData.afterHitstunActionPoolMaskHi = triggerAfterHitstunActionPoolMaskHi.load();
+    guiState.localData.afterAirtechActionPoolMaskLo = triggerAfterAirtechActionPoolMaskLo.load();
+    guiState.localData.afterAirtechActionPoolMaskHi = triggerAfterAirtechActionPoolMaskHi.load();
+    guiState.localData.onRGActionPoolMaskLo         = triggerOnRGActionPoolMaskLo.load();
+    guiState.localData.onRGActionPoolMaskHi         = triggerOnRGActionPoolMaskHi.load();
+    guiState.localData.afterBlockUseActionPool    = triggerAfterBlockUsePool.load();
+    guiState.localData.onWakeupUseActionPool      = triggerOnWakeupUsePool.load();
+    guiState.localData.afterHitstunUseActionPool  = triggerAfterHitstunUsePool.load();
+    guiState.localData.afterAirtechUseActionPool  = triggerAfterAirtechUsePool.load();
+    guiState.localData.onRGUseActionPool          = triggerOnRGUsePool.load();
+    for (int i = 0; i < MAX_ACTION_POOL_OPTIONS; ++i) {
+        guiState.localData.afterBlockActionPoolDelays[i]   = g_afterBlockActionPoolDelays[i];
+        guiState.localData.onWakeupActionPoolDelays[i]     = g_onWakeupActionPoolDelays[i];
+        guiState.localData.afterHitstunActionPoolDelays[i] = g_afterHitstunActionPoolDelays[i];
+        guiState.localData.afterAirtechActionPoolDelays[i] = g_afterAirtechActionPoolDelays[i];
+        guiState.localData.onRGActionPoolDelays[i]         = g_onRGActionPoolDelays[i];
+        guiState.localData.afterBlockActionPoolCharges[i]   = g_afterBlockActionPoolCharges[i];
+        guiState.localData.onWakeupActionPoolCharges[i]     = g_onWakeupActionPoolCharges[i];
+        guiState.localData.afterHitstunActionPoolCharges[i] = g_afterHitstunActionPoolCharges[i];
+        guiState.localData.afterAirtechActionPoolCharges[i] = g_afterAirtechActionPoolCharges[i];
+        guiState.localData.onRGActionPoolCharges[i]         = g_onRGActionPoolCharges[i];
+    }
 
     // Per-trigger custom IDs
     guiState.localData.customAfterBlock    = triggerAfterBlockCustomID.load();
@@ -2674,46 +4474,16 @@ namespace ImGuiGui {
     guiState.localData.macroSlotAfterAirtech = triggerAfterAirtechMacroSlot.load();
     guiState.localData.macroSlotOnRG         = triggerOnRGMacroSlot.load();
 
-    // Copy character-specific settings from displayData (which may have been reset)
-    // This ensures GUI checkboxes reflect the current state after ResetDisplayDataToDefaults()
-    guiState.localData.p1NayukiSnowbunnies = displayData.p1NayukiSnowbunnies;
-    guiState.localData.p2NayukiSnowbunnies = displayData.p2NayukiSnowbunnies;
-    guiState.localData.p1NayukiInfiniteSnow = displayData.p1NayukiInfiniteSnow;
-    guiState.localData.p2NayukiInfiniteSnow = displayData.p2NayukiInfiniteSnow;
-    guiState.localData.infiniteBloodMode = displayData.infiniteBloodMode;
-    guiState.localData.p1MaiInfiniteGhost = displayData.p1MaiInfiniteGhost;
-    guiState.localData.p1MaiInfiniteCharge = displayData.p1MaiInfiniteCharge;
-    guiState.localData.p1MaiInfiniteAwakening = displayData.p1MaiInfiniteAwakening;
-    guiState.localData.p2MaiInfiniteCharge = displayData.p2MaiInfiniteCharge;
-    guiState.localData.p2MaiInfiniteAwakening = displayData.p2MaiInfiniteAwakening;
-    guiState.localData.p1MisuzuInfinitePoison = displayData.p1MisuzuInfinitePoison;
-    guiState.localData.p2MisuzuInfinitePoison = displayData.p2MisuzuInfinitePoison;
-    guiState.localData.infiniteMishioElement = displayData.infiniteMishioElement;
-    guiState.localData.infiniteMishioAwakened = displayData.infiniteMishioAwakened;
-    guiState.localData.p1RumiInfiniteShinai = displayData.p1RumiInfiniteShinai;
-    guiState.localData.p2RumiInfiniteShinai = displayData.p2RumiInfiniteShinai;
-    guiState.localData.p1RumiInfiniteKimchi = displayData.p1RumiInfiniteKimchi;
-    guiState.localData.p2RumiInfiniteKimchi = displayData.p2RumiInfiniteKimchi;
-    guiState.localData.p1AkikoInfiniteTimeslow = displayData.p1AkikoInfiniteTimeslow;
-    guiState.localData.p2AkikoInfiniteTimeslow = displayData.p2AkikoInfiniteTimeslow;
-    // Minagi (puppet settings and flags)
-    guiState.localData.p1MinagiAlwaysReadied = displayData.p1MinagiAlwaysReadied;
-    guiState.localData.p2MinagiAlwaysReadied = displayData.p2MinagiAlwaysReadied;
-    guiState.localData.minagiConvertNewProjectiles = displayData.minagiConvertNewProjectiles;
-    guiState.localData.p1MinagiApplyPos = displayData.p1MinagiApplyPos;
-    guiState.localData.p2MinagiApplyPos = displayData.p2MinagiApplyPos;
-    guiState.localData.p1MinagiPuppetSetX = displayData.p1MinagiPuppetSetX;
-    guiState.localData.p1MinagiPuppetSetY = displayData.p1MinagiPuppetSetY;
-    guiState.localData.p2MinagiPuppetSetX = displayData.p2MinagiPuppetSetX;
-    guiState.localData.p2MinagiPuppetSetY = displayData.p2MinagiPuppetSetY;
-    // Note: p1MinagiPuppetX/Y and p2MinagiPuppetX/Y are read from memory by ScanMichiru above
     }
 
     // Update ApplyImGuiSettings to include character-specific data
     void ApplyImGuiSettings() {
         if (g_featuresEnabled.load()) {
-            LogOut("[IMGUI_GUI] Applying settings from ImGui interface", true);
-            
+            bool charsInit = AreCharactersInitialized();
+            LogOut("[IMGUI_GUI] Applying settings from ImGui interface (charsInit=" + std::string(charsInit ? "Y" : "N") +
+                   ", P1CharID=" + std::to_string(guiState.localData.p1CharID) +
+                   ", P2CharID=" + std::to_string(guiState.localData.p2CharID) + ")", true);
+
             DisplayData updatedData = guiState.localData;
             // Normalize Rumi intent: Infinite Shinai overrides to Shinai mode
             if (updatedData.p1RumiInfiniteShinai) updatedData.p1RumiBarehanded = false;
@@ -2733,6 +4503,30 @@ namespace ImGuiGui {
             displayData.p1RumiInfiniteShinai = updatedData.p1RumiInfiniteShinai;
             displayData.p2RumiInfiniteShinai = updatedData.p2RumiInfiniteShinai;
             
+            // Doppel Nanase follow-up teching (per side; the row lives on
+            // Doppel's side but drives the opponent's escape behaviour).
+            DoppelTech::SetMode(1, displayData.p1DoppelTechMode);
+            DoppelTech::SetMode(2, displayData.p2DoppelTechMode);
+            DoppelTech::SetStage(1, displayData.p1DoppelTechStage);
+            DoppelTech::SetStage(2, displayData.p2DoppelTechStage);
+
+            // Sayuri's counter memory. The row index is presentation only, so it
+            // is resolved to a move ID through the SAME rebuilt list the menu
+            // rendered; an index that no longer names a move on this opponent
+            // collapses to OFF in both copies rather than pinning something else.
+            {
+                const int sayuriIdxP1 = SayuriCounter::ValidateChoiceIndex(1, displayData.p1SayuriMemoryChoice);
+                const int sayuriIdxP2 = SayuriCounter::ValidateChoiceIndex(2, displayData.p2SayuriMemoryChoice);
+                displayData.p1SayuriMemoryChoice = sayuriIdxP1;
+                displayData.p2SayuriMemoryChoice = sayuriIdxP2;
+                guiState.localData.p1SayuriMemoryChoice = sayuriIdxP1;
+                guiState.localData.p2SayuriMemoryChoice = sayuriIdxP2;
+                SayuriCounter::SetMemory(1, sayuriIdxP1, SayuriCounter::MoveIdForChoice(1, sayuriIdxP1));
+                SayuriCounter::SetMemory(2, sayuriIdxP2, SayuriCounter::MoveIdForChoice(2, sayuriIdxP2));
+            }
+            SayuriCounter::SetCutter(1, displayData.p1SayuriCutterMode);
+            SayuriCounter::SetCutter(2, displayData.p2SayuriCutterMode);
+
             // Update atomic variables from our local copy
             autoAirtechEnabled.store(displayData.autoAirtech);
             autoAirtechDirection.store(displayData.airtechDirection);
@@ -2741,7 +4535,9 @@ namespace ImGuiGui {
             jumpDirection.store(displayData.jumpDirection);
             jumpTarget.store(displayData.jumpTarget);
 
-            // Auto-action master settings
+            // Auto-action master/target are derived from trigger rows and local side.
+            displayData.autoAction = HasAnyAutoActionTriggerEnabled(displayData);
+            displayData.autoActionPlayer = ResolveAutoActionTargetPlayer();
             autoActionEnabled.store(displayData.autoAction);
             autoActionPlayer.store(displayData.autoActionPlayer);
 
@@ -2751,6 +4547,7 @@ namespace ImGuiGui {
             triggerAfterHitstunEnabled.store(displayData.triggerAfterHitstun);
             triggerAfterAirtechEnabled.store(displayData.triggerAfterAirtech);
             triggerOnRGEnabled.store(displayData.triggerOnRG);
+            triggerRandomizeEnabled.store(displayData.randomizeTriggers);
 
             // Per-trigger delays
             triggerAfterBlockDelay.store(displayData.delayAfterBlock);
@@ -2765,6 +4562,46 @@ namespace ImGuiGui {
             triggerAfterHitstunAction.store(displayData.actionAfterHitstun);
             triggerAfterAirtechAction.store(displayData.actionAfterAirtech);
             triggerOnRGAction.store(displayData.actionOnRG);
+
+            triggerAfterBlockCharge.store(displayData.chargeAfterBlock);
+            triggerOnWakeupCharge.store(displayData.chargeOnWakeup);
+            triggerAfterHitstunCharge.store(displayData.chargeAfterHitstun);
+            triggerAfterAirtechCharge.store(displayData.chargeAfterAirtech);
+            triggerOnRGCharge.store(displayData.chargeOnRG);
+
+            // Per-trigger multi-action pools
+            triggerAfterBlockActionPoolMask.store(displayData.afterBlockActionPoolMask);
+            triggerOnWakeupActionPoolMask.store(displayData.onWakeupActionPoolMask);
+            triggerAfterHitstunActionPoolMask.store(displayData.afterHitstunActionPoolMask);
+            triggerAfterAirtechActionPoolMask.store(displayData.afterAirtechActionPoolMask);
+            triggerOnRGActionPoolMask.store(displayData.onRGActionPoolMask);
+            triggerAfterBlockActionPoolMaskLo.store(displayData.afterBlockActionPoolMaskLo);
+            triggerAfterBlockActionPoolMaskHi.store(displayData.afterBlockActionPoolMaskHi);
+            triggerOnWakeupActionPoolMaskLo.store(displayData.onWakeupActionPoolMaskLo);
+            triggerOnWakeupActionPoolMaskHi.store(displayData.onWakeupActionPoolMaskHi);
+            triggerAfterHitstunActionPoolMaskLo.store(displayData.afterHitstunActionPoolMaskLo);
+            triggerAfterHitstunActionPoolMaskHi.store(displayData.afterHitstunActionPoolMaskHi);
+            triggerAfterAirtechActionPoolMaskLo.store(displayData.afterAirtechActionPoolMaskLo);
+            triggerAfterAirtechActionPoolMaskHi.store(displayData.afterAirtechActionPoolMaskHi);
+            triggerOnRGActionPoolMaskLo.store(displayData.onRGActionPoolMaskLo);
+            triggerOnRGActionPoolMaskHi.store(displayData.onRGActionPoolMaskHi);
+            triggerAfterBlockUsePool.store(displayData.afterBlockUseActionPool);
+            triggerOnWakeupUsePool.store(displayData.onWakeupUseActionPool);
+            triggerAfterHitstunUsePool.store(displayData.afterHitstunUseActionPool);
+            triggerAfterAirtechUsePool.store(displayData.afterAirtechUseActionPool);
+            triggerOnRGUsePool.store(displayData.onRGUseActionPool);
+            for (int i = 0; i < MAX_ACTION_POOL_OPTIONS; ++i) {
+                g_afterBlockActionPoolDelays[i]   = displayData.afterBlockActionPoolDelays[i];
+                g_onWakeupActionPoolDelays[i]     = displayData.onWakeupActionPoolDelays[i];
+                g_afterHitstunActionPoolDelays[i] = displayData.afterHitstunActionPoolDelays[i];
+                g_afterAirtechActionPoolDelays[i] = displayData.afterAirtechActionPoolDelays[i];
+                g_onRGActionPoolDelays[i]         = displayData.onRGActionPoolDelays[i];
+                g_afterBlockActionPoolCharges[i]   = displayData.afterBlockActionPoolCharges[i];
+                g_onWakeupActionPoolCharges[i]     = displayData.onWakeupActionPoolCharges[i];
+                g_afterHitstunActionPoolCharges[i] = displayData.afterHitstunActionPoolCharges[i];
+                g_afterAirtechActionPoolCharges[i] = displayData.afterAirtechActionPoolCharges[i];
+                g_onRGActionPoolCharges[i]         = displayData.onRGActionPoolCharges[i];
+            }
 
             // Per-trigger custom IDs
             triggerAfterBlockCustomID.store(displayData.customAfterBlock);
@@ -2786,10 +4623,22 @@ namespace ImGuiGui {
             triggerAfterHitstunMacroSlot.store(displayData.macroSlotAfterHitstun);
             triggerAfterAirtechMacroSlot.store(displayData.macroSlotAfterAirtech);
             triggerOnRGMacroSlot.store(displayData.macroSlotOnRG);
+
+            // Copy per-trigger option rows to runtime mirrors (clamped to MAX_TRIGGER_OPTIONS)
+            auto clampCopy = [](int srcCount, const TriggerOption* srcArr, int& dstCount, TriggerOption* dstArr){
+                int n = srcCount; if (n < 0) n = 0; if (n > MAX_TRIGGER_OPTIONS) n = MAX_TRIGGER_OPTIONS;
+                dstCount = n;
+                for (int i=0;i<n;i++) dstArr[i] = srcArr[i];
+                for (int i=n;i<MAX_TRIGGER_OPTIONS;i++) dstArr[i] = TriggerOption{false, ACTION_5A, 0, 0, (int)BASE_ATTACK_5A, 0, 0};
+            };
+            clampCopy(displayData.afterBlockOptionCount,    displayData.afterBlockOptions,    g_afterBlockOptionCount,    g_afterBlockOptions);
+            clampCopy(displayData.onWakeupOptionCount,      displayData.onWakeupOptions,      g_onWakeupOptionCount,      g_onWakeupOptions);
+            clampCopy(displayData.afterHitstunOptionCount,  displayData.afterHitstunOptions,  g_afterHitstunOptionCount,  g_afterHitstunOptions);
+            clampCopy(displayData.afterAirtechOptionCount,  displayData.afterAirtechOptions,  g_afterAirtechOptionCount,  g_afterAirtechOptions);
+            clampCopy(displayData.onRGOptionCount,          displayData.onRGOptions,          g_onRGOptionCount,          g_onRGOptions);
             
-            // Enforce FM bypass state to match UI selection (idempotent)
-            // We read current enabled state from the runtime and reapply to ensure consistency
-            SetFinalMemoryBypass(IsFinalMemoryBypassEnabled());
+            // Reconcile FM bypass runtime patch with the stored local request.
+            SyncFinalMemoryBypassForCurrentMode("ImGui Apply");
 
             // Persist wake buffering toggle (already live-updated, but ensure consistency on Apply)
             // No additional action needed; atomic already updated through checkbox interaction.
@@ -2802,7 +4651,6 @@ namespace ImGuiGui {
                 DisablePlayer2InPracticeMode();
             }
             
-            // Add this to log character settings being applied
             LogOut("[IMGUI_GUI] Applying character settings - Blood Mode: " + 
                    std::to_string(displayData.infiniteBloodMode) + 
                    ", Feather Mode: " + std::to_string(displayData.infiniteFeatherMode) +
@@ -2811,8 +4659,32 @@ namespace ImGuiGui {
                    ", P1 Blue IC: " + std::to_string(displayData.p1BlueIC) + 
                    ", P2 Blue IC: " + std::to_string(displayData.p2BlueIC), true);
             
-            // Apply IC color settings directly
-            SetICColorDirect(displayData.p1BlueIC, displayData.p2BlueIC);
+            // Apply IC color settings ONCE per Apply if not managed by RF Freeze color lock or Continuous Recovery color logic.
+            auto crColorManaged = [&](int player)->bool {
+                if (player == 1) {
+                    if (!displayData.p1ContinuousRecoveryEnabled) return false;
+                    if (displayData.p1RecoveryRfMode == 3 || displayData.p1RecoveryRfMode == 4) return true; // Red presets force Red later
+                    if (displayData.p1RecoveryRfMode == 5 && displayData.p1RecoveryRfForceBlueIC) return true; // Custom+BIC forces Blue
+                    return false;
+                } else {
+                    if (!displayData.p2ContinuousRecoveryEnabled) return false;
+                    if (displayData.p2RecoveryRfMode == 3 || displayData.p2RecoveryRfMode == 4) return true;
+                    if (displayData.p2RecoveryRfMode == 5 && displayData.p2RecoveryRfForceBlueIC) return true;
+                    return false;
+                }
+            };
+            bool p1Managed = IsRFFreezeColorManaging(1) || crColorManaged(1);
+            bool p2Managed = IsRFFreezeColorManaging(2) || crColorManaged(2);
+            if (!p1Managed || !p2Managed) {
+                // Only write what is not managed to avoid fighting per-frame logic.
+                if (!p1Managed && !p2Managed) {
+                    SetICColorDirect(displayData.p1BlueIC, displayData.p2BlueIC);
+                } else if (!p1Managed) {
+                    SetICColorPlayer(1, displayData.p1BlueIC);
+                } else if (!p2Managed) {
+                    SetICColorPlayer(2, displayData.p2BlueIC);
+                }
+            }
             
             // Apply the settings to the game
             uintptr_t base = GetEFZBase();
@@ -2820,14 +4692,21 @@ namespace ImGuiGui {
                 // Defer Rumi mode apply if not actionable to avoid unsafe engine calls
                 bool deferred = false;
                 if (displayData.p1CharID == CHAR_ID_NANASE) {
-                    short mv = 0; if (auto mvAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, MOVE_ID_OFFSET)) SafeReadMemory(mvAddr, &mv, sizeof(short));
-                    if (!IsActionable(mv)) deferred = true;
+                    // Use unified sample for current P1 move when available
+                    const PerFrameSample &uiSample = GetCurrentPerFrameSample();
+                    short mv = uiSample.moveID1;
+                    if (!uiSample.actionable1) deferred = true;
                 }
                 if (displayData.p2CharID == CHAR_ID_NANASE) {
-                    short mv = 0; if (auto mvAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, MOVE_ID_OFFSET)) SafeReadMemory(mvAddr, &mv, sizeof(short));
-                    if (!IsActionable(mv)) deferred = true;
+                    const PerFrameSample &uiSample2 = GetCurrentPerFrameSample();
+                    short mv = uiSample2.moveID2;
+                    if (!uiSample2.actionable2) deferred = true;
                 }
-                ApplySettings(&displayData);
+                // Commit the remaining low-level runtime writes through the shared runtime-applier.
+                // Engine F4 recovery safety is handled there so the in-game and fallback hosts stay aligned.
+                LogOut("[IMGUI_GUI] Calling ApplyRuntimeSettings from ImGui (base!=0)", true);
+                ApplyRuntimeSettings(&displayData);
+
                 // Run one enforcement tick immediately so infinite toggles take effect without waiting for the next cadence
                 CharacterSettings::TickCharacterEnforcements(base, displayData);
                 if (deferred) {
@@ -2898,6 +4777,8 @@ namespace ImGuiGui {
                 };
 
                 auto enforceForPlayer = [&](int p){
+                    // CRITICAL: Never modify game memory during online mode
+                    if (g_onlineModeActive.load()) return;
                     bool enabled = (p==1) ? displayData.p1ContinuousRecoveryEnabled : displayData.p2ContinuousRecoveryEnabled;
                     if (!enabled) return;
                     // Resolve player bases once
@@ -2907,8 +4788,9 @@ namespace ImGuiGui {
                     bool wrote = false;
                     uintptr_t pB = (p==1)? p1B : p2B;
                     if (tg.hpOn) {
-                        WORD tgt = (WORD)CLAMP(tg.hp, 0, MAX_HP);
+                        int tgt = CLAMP(tg.hp, 0, MAX_HP);
                         SafeWriteMemory(pB + HP_OFFSET, &tgt, sizeof(tgt));
+                        SafeWriteMemory(pB + HP_BAR_OFFSET, &tgt, sizeof(tgt));
                         wrote = true;
                     }
                     if (tg.meterOn) {
@@ -2923,7 +4805,7 @@ namespace ImGuiGui {
                         if (p==1) p1rf = tg.rf; else p2rf = tg.rf;
                         (void)SetRFValuesDirect(p1rf, p2rf);
                         if (Config::GetSettings().freezeRFAfterContRec) {
-                            StartRFFreezeOne(p, tg.rf);
+                            StartRFFreezeOneFromCR(p, tg.rf);
                         }
                         // BIC (Blue IC) only under Custom RF
                         if (tg.bic) {
@@ -2953,7 +4835,70 @@ namespace ImGuiGui {
                 // Apply one-shot enforcement now (only for sides with CR enabled)
                 enforceForPlayer(1);
                 enforceForPlayer(2);
+            } else {
+                LogOut("[IMGUI_GUI] ApplyImGuiSettings: base=0; skipping ApplySettings/TickCharacterEnforcements", true);
             }
         }
     }
 }
+    // Programmatic navigation helpers implementation
+    namespace ImGuiGui {
+        // Logical order mapping for top-level tabs
+        static int TopTabLogicalToActual(int logicalIndex) {
+            // Map (requested order): Main, Auto Actions, Characters, Settings, Help -> actual IDs 0,1,2,5,4
+            static const int map[5] = { 0, 1, 2, 5, 4 };
+            if (logicalIndex < 0) logicalIndex = 0; if (logicalIndex > 4) logicalIndex = 4;
+            return map[logicalIndex];
+        }
+        static int TopTabActualToLogical(int actual) {
+            switch (actual) {
+                case 0: return 0; // Main
+                case 1: return 1; // Auto Actions
+                case 2: return 2; // Characters
+                case 5: return 3; // Settings
+                case 4: return 4; // Help
+                default: return 0;
+            }
+        }
+
+        void RequestTopTabAbsolute(int logicalIndex) {
+            if (logicalIndex < 0) logicalIndex = 0; if (logicalIndex > 4) logicalIndex = 4;
+            guiState.requestedTab = TopTabLogicalToActual(logicalIndex);
+        }
+
+        void RequestTopTabCycle(int direction) {
+            int curLogical = TopTabActualToLogical(guiState.currentTab);
+            int next = (curLogical + (direction >= 0 ? 1 : -1));
+            if (next < 0) next = 4; else if (next > 4) next = 0;
+            guiState.requestedTab = TopTabLogicalToActual(next);
+        }
+
+        void RequestActiveSubTabCycle(int direction) {
+            // Determine which sub-tab group is active based on the current top-level tab
+            const int dir = (direction >= 0) ? 1 : -1;
+            if (guiState.currentTab == 0) {
+                // Main Menu: 3 sub-tabs
+                int idx = guiState.mainMenuSubTab;
+                int count = 3;
+                idx = (idx + dir) % count; if (idx < 0) idx += count;
+                guiState.mainMenuSubTab = idx;
+                guiState.requestedMainMenuSubTab = idx;
+            } else if (guiState.currentTab == 1) {
+                // Auto Action: 2 sub-tabs
+                int idx = guiState.autoActionSubTab;
+                int count = 2;
+                idx = (idx + dir) % count; if (idx < 0) idx += count;
+                guiState.autoActionSubTab = idx;
+                guiState.requestedAutoActionSubTab = idx;
+            } else if (guiState.currentTab == 4) {
+                // Help: 4 sub-tabs (Getting Started, Guide, Resources, About)
+                int idx = guiState.helpSubTab;
+                int count = 4;
+                idx = (idx + dir) % count; if (idx < 0) idx += count;
+                guiState.helpSubTab = idx;
+                guiState.requestedHelpSubTab = idx;
+            } else {
+                // No sub-tabs for Settings/Character; do nothing
+            }
+        }
+    }

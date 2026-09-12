@@ -3,11 +3,12 @@
 #include "../include/core/memory.h"
 #include "../include/core/constants.h"
 #include "../include/gui/overlay.h"
-#include "../include/core/globals.h"  // Add this include
+#include "../include/core/globals.h"  
+#include "../include/utils/audio_control.h"
 #include "../3rdparty/minhook/include/MinHook.h"
-#include <atomic>
 #include <thread>
 #include <chrono>
+#include <atomic>
 
 // Offsets
 constexpr uintptr_t BGM_SLOT_OFFSET   = 0xF26;
@@ -21,8 +22,7 @@ static PlayBGMFunc oPlayBGM = nullptr;
 // Helper to get efz.exe base (implement this if not present)
 extern uintptr_t GetEFZBase();
 
-static std::atomic<bool> g_bgmSuppressed{false};
-static unsigned short g_lastBgmTrack = 0;
+static std::atomic<unsigned int> g_lastBgmTrack{0xFFFFu};
 
 bool StopBGM(uintptr_t gameSystemPtr) {
     if (!gameSystemPtr) return false;
@@ -34,28 +34,33 @@ bool StopBGM(uintptr_t gameSystemPtr) {
     StopBGMFunc stopBGM = (StopBGMFunc)(efzBase + 0x6A10); // 0x406A10 RVA
     LogOut("[BGM] Calling game's stopBackgroundMusic...", true);
     stopBGM(gameSystemPtr);
+    // Track 150 is EFZ's established "OFF" selection. Preserve silence as a
+    // reproducible logical presentation state instead of leaving a stale track.
+    SetLastBgmTrack(150);
     LogOut("[BGM] Called stopBackgroundMusic.", true);
     return true;
 }
 
 bool PlayBGM(uintptr_t gameSystemPtr, unsigned short trackNumber) {
     if (!gameSystemPtr) return false;
-    uintptr_t efzBase = GetEFZBase();
-    if (!efzBase) {
-        LogOut("[BGM] Could not get EFZ base address!", true);
+    LogOut("[BGM] Calling game's playBackgroundMusic with track " + std::to_string(trackNumber), true);
+    if (!AudioControl::PlayBackgroundMusic(gameSystemPtr, trackNumber)) {
+        LogOut("[BGM] playBackgroundMusic request failed for track " + std::to_string(trackNumber), true);
         return false;
     }
-    PlayBGMFunc playBGM = (PlayBGMFunc)(efzBase + 0x68B0); // 0x4068B0 RVA
-    LogOut("[BGM] Calling game's playBackgroundMusic with track " + std::to_string(trackNumber), true);
-    playBGM(gameSystemPtr, trackNumber);
-    LogOut("[BGM] Called playBackgroundMusic.", true);
+    SetLastBgmTrack(trackNumber);
+    LogOut("[BGM] playBackgroundMusic request succeeded.", true);
     return true;
 }
 
-int GetBGMSlot(uintptr_t gameStatePtr) {
+int GetBGMBufferIndex(uintptr_t gameStatePtr) {
     uint16_t slot = 0;
     SafeReadMemory(gameStatePtr + 0xF26, &slot, sizeof(uint16_t));
     return static_cast<int>(slot);
+}
+
+int GetBGMSlot(uintptr_t gameStatePtr) {
+    return GetBGMBufferIndex(gameStatePtr);
 }
 
 int GetBGMVolume(uintptr_t gameStatePtr) {
@@ -64,27 +69,7 @@ int GetBGMVolume(uintptr_t gameStatePtr) {
     return vol;
 }
 
-bool ToggleBGM(uintptr_t gameSystemPtr) {
-    if (!gameSystemPtr) return false;
-    if (!IsBGMSuppressed()) {
-        // Save current slot before stopping
-        g_lastBgmTrack = static_cast<unsigned short>(GetBGMSlot(gameSystemPtr));
-        StopBGM(gameSystemPtr);
-        LogOut("[BGM] Toggled OFF (stopped BGM)", true);
-        DirectDrawHook::AddMessage("BGM: OFF", "SYSTEM", RGB(255, 100, 100), 1500, 0, 100);
-    } else {
-        // Resume BGM if we have a valid track
-        if (g_lastBgmTrack != 150 && g_lastBgmTrack != 0) {
-            PlayBGM(gameSystemPtr, g_lastBgmTrack);
-            LogOut("[BGM] Toggled ON (resumed BGM, track " + std::to_string(g_lastBgmTrack) + ")", true);
-            DirectDrawHook::AddMessage("BGM: ON", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
-        } else {
-            LogOut("[BGM] Toggled ON but no previous track to resume.", true);
-            DirectDrawHook::AddMessage("BGM: ON (no track)", "SYSTEM", RGB(255, 255, 100), 1500, 0, 100);
-        }
-    }
-    return true;
-}
+// ToggleBGM removed (unused legacy API).
 
 // Our hook function
 void __fastcall HookedPlayBGM(uintptr_t gameSystemPtr, void*, unsigned short trackNumber) {
@@ -94,11 +79,6 @@ void __fastcall HookedPlayBGM(uintptr_t gameSystemPtr, void*, unsigned short tra
     if (!gameSystemPtr) {
         LogOut("[BGM] Invalid gameSystemPtr in HookedPlayBGM, bypassing hook", true);
         if (oPlayBGM) oPlayBGM(gameSystemPtr, trackNumber);
-        return;
-    }
-    
-    if (g_bgmSuppressed.load()) {
-        LogOut("[BGM] playBackgroundMusic suppressed by toggle.", true);
         return;
     }
     
@@ -125,24 +105,16 @@ bool InstallBGMHook(uintptr_t efzBase) {
     return true;
 }
 
-void SetBGMSuppressed(bool suppress) {
-    g_bgmSuppressed.store(suppress);
-    if (suppress) {
-        LogOut("[BGM] Global BGM suppression ENABLED", true);
-        DirectDrawHook::AddMessage("BGM: OFF (global)", "SYSTEM", RGB(255, 100, 100), 1500, 0, 100);
-    } else {
-        LogOut("[BGM] Global BGM suppression DISABLED", true);
-        DirectDrawHook::AddMessage("BGM: ON (global)", "SYSTEM", RGB(100, 255, 100), 1500, 0, 100);
-    }
-}
-bool IsBGMSuppressed() { return g_bgmSuppressed.load(); }
+// Suppression interface removed; stubs retained for ABI compatibility.
+void SetBGMSuppressed(bool /*suppress*/) {}
+bool IsBGMSuppressed() { return false; }
 
 unsigned short GetLastBgmTrack() {
-    return g_lastBgmTrack;
+    return static_cast<unsigned short>(g_lastBgmTrack.load(std::memory_order_acquire));
 }
 
 void SetLastBgmTrack(unsigned short track) {
-    g_lastBgmTrack = track;
+    g_lastBgmTrack.store(track, std::memory_order_release);
 }
 
 // Set BGM volume using the game's internal setSoundVolume function
@@ -164,43 +136,6 @@ bool SetBGMVolumeViaGame(uintptr_t gameSystemPtr, int volumeLevel) {
     return result == 0;
 }
 
-// --- BGM Suppression Poller Thread ---
-static std::atomic<bool> g_bgmPollerRunning{false};
-static std::thread g_bgmPollerThread;
-
-void BGMSuppressionPoller() {
-    LogOut("[BGM] BGM suppression poller thread started", true);
-    
-    while (g_bgmPollerRunning.load() && !g_isShuttingDown.load()) {  // Check shutdown flag
-        // If suppression isn't enabled, sleep longer and skip work
-        if (!g_bgmSuppressed.load()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-            continue;
-        }
-
-        uintptr_t efzBase = GetEFZBase();
-        uintptr_t gameStatePtr = 0;
-        if (efzBase && SafeReadMemory(efzBase + EFZ_BASE_OFFSET_GAME_STATE, &gameStatePtr, sizeof(uintptr_t)) && gameStatePtr) {
-            StopBGM(gameStatePtr);
-        }
-
-        // Check shutdown more frequently and back off a bit between enforcement attempts
-        for (int i = 0; i < 10 && g_bgmPollerRunning.load() && !g_isShuttingDown.load(); i++) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-    }
-    
-    LogOut("[BGM] BGM suppression poller thread ending", true);
-}
-
-void StartBGMSuppressionPoller() {
-    if (g_bgmPollerRunning.load()) return;
-    g_bgmPollerRunning.store(true);
-    g_bgmPollerThread = std::thread(BGMSuppressionPoller);
-    g_bgmPollerThread.detach();
-}
-
-void StopBGMSuppressionPoller() {
-    g_bgmPollerRunning.store(false);
-    // No join needed since it's detached
-}
+// Poller APIs removed; keep empty functions for binary compatibility.
+void StartBGMSuppressionPoller() {}
+void StopBGMSuppressionPoller() {}

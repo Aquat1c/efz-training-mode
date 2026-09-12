@@ -1,15 +1,25 @@
+#include "utils/minhook_utils.h"
 #include <fstream>
 #include <iomanip>
 #include <chrono>
+#include <sstream>
 #include <vector>
 #include <thread>
-#include <atomic> // Add this for std::atomic
+#include <atomic>
 #include "../include/gui/overlay.h"
+#include "../include/gui/overlay_api.h"
+#include "../include/gui/framebar.h"
+#include "../include/game/mission/mission_render.h"
+#include "../include/game/mission/mission_pause_menu.h"
+#include "../include/game/mission/tutorial_session.h"
+#include "../include/game/practice_menu/mission_title_screen.h"
 #include "../include/core/logger.h"
 #include "../include/utils/utilities.h"
 
 #include "../include/core/memory.h"   
 #include "../include/core/constants.h" 
+#include "../include/game/efzrevival_addrs.h"
+#include "../include/game/collision_display.h"
 #include "../3rdparty/detours/include/detours.h"
 #include <algorithm>
 #include "../include/gui/imgui_impl.h"
@@ -18,11 +28,14 @@
 #include <deque>
 #include <unordered_set>
 #include "../include/gui/imgui_gui.h"
+#include "../include/gui/custom_menu/renderer.h"
 #include "../3rdparty/minhook/include/MinHook.h"
 // ADD these includes for the new rendering loop
 #include "../include/gui/imgui_impl.h"
+#include "../include/utils/config.h"
 #include <Xinput.h>
-#pragma comment(lib, "xinput9_1_0.lib")
+// XInput loaded dynamically via XInputShim
+#include "../include/utils/xinput_shim.h"
 #include <cmath>
 #include "../../include/gui/gif_player.h"
 
@@ -46,8 +59,391 @@ int g_TriggerOnWakeupId = -1;
 int g_TriggerAfterHitstunId = -1;
 int g_TriggerAfterAirtechId = -1;
 int g_TriggerOnRGId = -1;
+int g_FramestepStatusId = -1;
 // Debug borders toggle default off
 std::atomic<bool> g_ShowOverlayDebugBorders{false};
+
+// Track RT size changes globally (shared across all EndScene calls)
+namespace {
+    std::mutex g_rtSizeMutex;
+    UINT g_prevRtW = 0;
+    UINT g_prevRtH = 0;
+    std::atomic<bool> g_rtSizeLogged{false};  // Use atomic for thread-safe first-log detection
+
+    ImU32 ImColorFromArgb(uint32_t argb) {
+        return IM_COL32(
+            static_cast<int>((argb >> 16) & 0xFFu),
+            static_cast<int>((argb >> 8) & 0xFFu),
+            static_cast<int>(argb & 0xFFu),
+            static_cast<int>((argb >> 24) & 0xFFu));
+    }
+
+    bool QueryRenderTargetSize(LPDIRECT3DDEVICE9 pDevice, UINT& outWidth, UINT& outHeight) {
+        outWidth = 0;
+        outHeight = 0;
+        if (!pDevice) {
+            return false;
+        }
+
+        IDirect3DSurface9* rt = nullptr;
+        if (FAILED(pDevice->GetRenderTarget(0, &rt)) || !rt) {
+            return false;
+        }
+
+        D3DSURFACE_DESC desc{};
+        const bool ok = SUCCEEDED(rt->GetDesc(&desc));
+        rt->Release();
+        if (!ok) {
+            return false;
+        }
+
+        outWidth = desc.Width;
+        outHeight = desc.Height;
+        return true;
+    }
+
+    struct VirtualDrawRange {
+        int firstVertex = 0;
+        int firstCommand = 0;
+    };
+
+    // Full-screen mission/tutorial surfaces author in EFZ's 640x480 virtual
+    // canvas. Isolate their draw commands so both geometry AND scissor rects
+    // can be mapped into the render target's letterboxed 4:3 game area without
+    // mutating commands emitted by another overlay.
+    VirtualDrawRange BeginVirtualDrawRange(ImDrawList* dl) {
+        if (!dl) return {};
+        if (dl->CmdBuffer.empty() || dl->CmdBuffer.back().ElemCount != 0) {
+            dl->AddDrawCmd();
+        }
+        return {dl->VtxBuffer.Size, dl->CmdBuffer.Size - 1};
+    }
+
+    void EndVirtualDrawRange(ImDrawList* dl, const VirtualDrawRange& range,
+                             float ox, float oy, float scale,
+                             float gameWidth, float gameHeight) {
+        if (!dl) return;
+
+        // EFZ's normal EndScene target is already the authored 640x480
+        // canvas. Avoid walking every tutorial vertex/command in that common
+        // case; the trailing command still isolates later overlays.
+        const ImVec2 displayPos = ImGui::GetMainViewport()->Pos;
+        const ImVec2 displaySize = ImGui::GetIO().DisplaySize;
+        const bool identityTransform =
+            std::fabs(ox) < 0.001f && std::fabs(oy) < 0.001f &&
+            std::fabs(scale - 1.0f) < 0.001f &&
+            std::fabs(gameWidth - 640.0f) < 0.001f &&
+            std::fabs(gameHeight - 480.0f) < 0.001f &&
+            std::fabs(displayPos.x) < 0.001f &&
+            std::fabs(displayPos.y) < 0.001f &&
+            std::fabs(displaySize.x - 640.0f) < 0.001f &&
+            std::fabs(displaySize.y - 480.0f) < 0.001f;
+        if (identityTransform) {
+            dl->AddDrawCmd();
+            return;
+        }
+
+        for (int i = range.firstVertex; i < dl->VtxBuffer.Size; ++i) {
+            ImDrawVert& vertex = dl->VtxBuffer[i];
+            vertex.pos.x = ox + vertex.pos.x * scale;
+            vertex.pos.y = oy + vertex.pos.y * scale;
+        }
+
+        const auto nearlyEqualClip = [](float a, float b) {
+            return std::fabs(a - b) < 0.5f;
+        };
+        for (int i = range.firstCommand; i < dl->CmdBuffer.Size; ++i) {
+            ImDrawCmd& cmd = dl->CmdBuffer[i];
+            ImVec4& clip = cmd.ClipRect;
+            const bool fullDisplay =
+                nearlyEqualClip(clip.x, displayPos.x) &&
+                nearlyEqualClip(clip.y, displayPos.y) &&
+                nearlyEqualClip(clip.z, displayPos.x + displaySize.x) &&
+                nearlyEqualClip(clip.w, displayPos.y + displaySize.y);
+            if (fullDisplay) {
+                clip = ImVec4(ox, oy, ox + gameWidth, oy + gameHeight);
+            } else {
+                clip.x = ox + clip.x * scale;
+                clip.y = oy + clip.y * scale;
+                clip.z = ox + clip.z * scale;
+                clip.w = oy + clip.w * scale;
+            }
+        }
+        // Prevent later messages from appending to a command whose clip rect
+        // was converted from virtual coordinates.
+        dl->AddDrawCmd();
+    }
+
+    bool IsEfzFullscreenCached() {
+        static HWND s_cachedHwnd = nullptr;
+        static DWORD s_lastRefreshTick = 0;
+        static bool s_cachedFullscreen = false;
+
+        HWND hwnd = FindEFZWindow();
+        if (!hwnd) {
+            s_cachedHwnd = nullptr;
+            s_cachedFullscreen = false;
+            s_lastRefreshTick = 0;
+            return false;
+        }
+
+        const DWORD now = GetTickCount();
+        if (hwnd == s_cachedHwnd && s_lastRefreshTick != 0 && (now - s_lastRefreshTick) < 125) {
+            return s_cachedFullscreen;
+        }
+
+        WINDOWPLACEMENT wp{ sizeof(WINDOWPLACEMENT) };
+        RECT wndRect{};
+        HMONITOR mon = nullptr;
+        MONITORINFO mi{ sizeof(MONITORINFO) };
+        bool fullscreen = false;
+        if (GetWindowPlacement(hwnd, &wp)
+            && GetWindowRect(hwnd, &wndRect)
+            && (mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY)) != nullptr
+            && GetMonitorInfo(mon, &mi)) {
+            fullscreen = EqualRect(&wndRect, &mi.rcMonitor) || EqualRect(&wndRect, &mi.rcWork);
+        }
+
+        s_cachedHwnd = hwnd;
+        s_cachedFullscreen = fullscreen;
+        s_lastRefreshTick = now;
+        return fullscreen;
+    }
+
+    std::atomic<bool> g_endSceneWatchdogStarted{false};
+    std::atomic<bool> g_endSceneInProgress{false};
+    std::atomic<DWORD> g_endSceneThreadId{0};
+    std::atomic<DWORD> g_endSceneStartTick{0};
+    std::atomic<unsigned long> g_endSceneSequence{0};
+    std::atomic<const char*> g_endScenePhase{"idle"};
+    std::atomic<bool> g_activeD3D9DeviceLogged{false};
+
+    bool TryReadPointer(uintptr_t address, uintptr_t* outValue) {
+        if (!address || !outValue) return false;
+        __try {
+            *outValue = *reinterpret_cast<const uintptr_t*>(address);
+            return true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+
+    std::string DescribeAddress(uintptr_t address) {
+        char result[256] = {};
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (address && VirtualQuery(reinterpret_cast<const void*>(address), &mbi, sizeof(mbi)) && mbi.AllocationBase) {
+            char modulePath[MAX_PATH] = {};
+            if (GetModuleFileNameA(static_cast<HMODULE>(mbi.AllocationBase), modulePath, MAX_PATH)) {
+                _snprintf_s(result, sizeof(result), _TRUNCATE,
+                            "%p %s+0x%lX",
+                            reinterpret_cast<void*>(address),
+                            modulePath,
+                            static_cast<unsigned long>(address - reinterpret_cast<uintptr_t>(mbi.AllocationBase)));
+                return result;
+            }
+            _snprintf_s(result, sizeof(result), _TRUNCATE,
+                        "%p allocationBase=%p",
+                        reinterpret_cast<void*>(address),
+                        mbi.AllocationBase);
+            return result;
+        }
+
+        _snprintf_s(result, sizeof(result), _TRUNCATE, "%p <unmapped>", reinterpret_cast<void*>(address));
+        return result;
+    }
+
+    void LogEndSceneHangSnapshot(DWORD tid, const char* phase, DWORD elapsedMs, unsigned long sequence) {
+        if (!tid || tid == GetCurrentThreadId()) {
+            return;
+        }
+
+        HANDLE thread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION,
+                                   FALSE,
+                                   tid);
+        if (!thread) {
+            LogOut("[OVERLAY][D3D9][HANG] Could not open render thread for snapshot; tid=" + std::to_string(tid), true);
+            return;
+        }
+
+        CONTEXT ctx{};
+        ctx.ContextFlags = CONTEXT_CONTROL;
+        uintptr_t ip = 0;
+        uintptr_t sp = 0;
+        uintptr_t bp = 0;
+        uintptr_t stack[6] = {};
+        bool stackOk[6] = {};
+
+        const DWORD suspendResult = SuspendThread(thread);
+        if (suspendResult == static_cast<DWORD>(-1)) {
+            CloseHandle(thread);
+            LogOut("[OVERLAY][D3D9][HANG] SuspendThread failed for render thread; tid=" + std::to_string(tid), true);
+            return;
+        }
+
+        const BOOL gotContext = GetThreadContext(thread, &ctx);
+#if defined(_M_IX86)
+        if (gotContext) {
+            ip = static_cast<uintptr_t>(ctx.Eip);
+            sp = static_cast<uintptr_t>(ctx.Esp);
+            bp = static_cast<uintptr_t>(ctx.Ebp);
+            for (int i = 0; i < 6; ++i) {
+                stackOk[i] = TryReadPointer(sp + static_cast<uintptr_t>(i) * sizeof(uintptr_t), &stack[i]);
+            }
+        }
+#endif
+        ResumeThread(thread);
+        CloseHandle(thread);
+
+        char header[320] = {};
+        _snprintf_s(header, sizeof(header), _TRUNCATE,
+                    "[OVERLAY][D3D9][HANG] EndScene active for %lums seq=%lu tid=%lu phase=%s ctx=%s ip=%s sp=%p bp=%p",
+                    static_cast<unsigned long>(elapsedMs),
+                    sequence,
+                    static_cast<unsigned long>(tid),
+                    phase ? phase : "unknown",
+                    gotContext ? "ok" : "failed",
+                    ip ? DescribeAddress(ip).c_str() : "<unavailable>",
+                    reinterpret_cast<void*>(sp),
+                    reinterpret_cast<void*>(bp));
+        LogOut(header, true);
+
+        if (gotContext && sp) {
+            for (int i = 0; i < 6; ++i) {
+                if (!stackOk[i]) continue;
+                char line[320] = {};
+                const std::string desc = DescribeAddress(stack[i]);
+                _snprintf_s(line, sizeof(line), _TRUNCATE,
+                            "[OVERLAY][D3D9][HANG] stack[%d]=%s",
+                            i,
+                            desc.c_str());
+                LogOut(line, true);
+            }
+        }
+    }
+
+    void StartEndSceneWatchdog() {
+        bool expected = false;
+        if (!g_endSceneWatchdogStarted.compare_exchange_strong(expected, true)) {
+            return;
+        }
+
+        std::thread([] {
+            unsigned long lastLoggedSequence = 0;
+            DWORD lastLogTick = 0;
+            for (;;) {
+                Sleep(250);
+                if (!g_endSceneInProgress.load(std::memory_order_acquire)) {
+                    continue;
+                }
+
+                const DWORD now = GetTickCount();
+                const DWORD start = g_endSceneStartTick.load(std::memory_order_acquire);
+                const DWORD elapsed = now - start;
+                if (elapsed < 2500) {
+                    continue;
+                }
+
+                const unsigned long sequence = g_endSceneSequence.load(std::memory_order_acquire);
+                if (sequence == lastLoggedSequence && (now - lastLogTick) < 5000) {
+                    continue;
+                }
+
+                lastLoggedSequence = sequence;
+                lastLogTick = now;
+                LogEndSceneHangSnapshot(g_endSceneThreadId.load(std::memory_order_acquire),
+                                         g_endScenePhase.load(std::memory_order_acquire),
+                                         elapsed,
+                                         sequence);
+            }
+        }).detach();
+    }
+
+    void SetEndScenePhase(const char* phase) {
+        g_endScenePhase.store(phase ? phase : "unknown", std::memory_order_release);
+    }
+
+    struct EndSceneHangScope {
+        EndSceneHangScope() {
+            StartEndSceneWatchdog();
+            g_endSceneThreadId.store(GetCurrentThreadId(), std::memory_order_release);
+            g_endSceneStartTick.store(GetTickCount(), std::memory_order_release);
+            g_endSceneSequence.fetch_add(1, std::memory_order_acq_rel);
+            SetEndScenePhase("enter");
+            g_endSceneInProgress.store(true, std::memory_order_release);
+        }
+
+        ~EndSceneHangScope() {
+            SetEndScenePhase("idle");
+            g_endSceneInProgress.store(false, std::memory_order_release);
+        }
+    };
+
+    void LogActiveD3D9DeviceOnce(LPDIRECT3DDEVICE9 pDevice) {
+        if (!pDevice) return;
+        bool expected = false;
+        if (!g_activeD3D9DeviceLogged.compare_exchange_strong(expected, true)) {
+            return;
+        }
+
+        D3DDEVICE_CREATION_PARAMETERS cp{};
+        const HRESULT cpHr = pDevice->GetCreationParameters(&cp);
+        IDirect3D9* d3d = nullptr;
+        const HRESULT d3dHr = pDevice->GetDirect3D(&d3d);
+        if (SUCCEEDED(cpHr) && SUCCEEDED(d3dHr) && d3d) {
+            D3DADAPTER_IDENTIFIER9 ident{};
+            if (SUCCEEDED(d3d->GetAdapterIdentifier(cp.AdapterOrdinal, 0, &ident))) {
+                char idbuf[256] = {};
+                _snprintf_s(idbuf, sizeof(idbuf), _TRUNCATE,
+                            "[OVERLAY][D3D9] Active device adapter=%u vendor=0x%04X device=0x%04X desc=%s",
+                            static_cast<unsigned>(cp.AdapterOrdinal),
+                            ident.VendorId,
+                            ident.DeviceId,
+                            ident.Description);
+                LogOut(idbuf, true);
+                if (ident.VendorId == 0x1002) {
+                    LogOut("[OVERLAY][D3D9] AMD adapter detected; EndScene watchdog and cooperative-level guards are active", true);
+                }
+            }
+        } else {
+            char buf[160] = {};
+            _snprintf_s(buf, sizeof(buf), _TRUNCATE,
+                        "[OVERLAY][D3D9] Active device adapter query failed cp=0x%08lX d3d=0x%08lX",
+                        static_cast<unsigned long>(cpHr),
+                        static_cast<unsigned long>(d3dHr));
+            LogOut(buf, true);
+        }
+
+        if (d3d) {
+            d3d->Release();
+        }
+    }
+
+    bool SkipOverlayForLostDevice(LPDIRECT3DDEVICE9 pDevice) {
+        if (!pDevice) return true;
+        const HRESULT hr = pDevice->TestCooperativeLevel();
+        if (hr == D3D_OK) {
+            return false;
+        }
+
+        static HRESULT s_lastLoggedHr = D3D_OK;
+        static DWORD s_lastLogTick = 0;
+        const DWORD now = GetTickCount();
+        if (hr != s_lastLoggedHr || (now - s_lastLogTick) >= 1000) {
+            s_lastLoggedHr = hr;
+            s_lastLogTick = now;
+            char buf[160] = {};
+            _snprintf_s(buf, sizeof(buf), _TRUNCATE,
+                        "[OVERLAY][D3D9] TestCooperativeLevel=0x%08lX; %s",
+                        static_cast<unsigned long>(hr),
+                        (hr == D3DERR_DEVICELOST || hr == D3DERR_DEVICENOTRESET)
+                            ? "skipping overlay render this frame"
+                            : "continuing overlay render");
+            LogOut(buf, true);
+        }
+
+        return hr == D3DERR_DEVICELOST || hr == D3DERR_DEVICENOTRESET;
+    }
+}
 std::atomic<bool> g_ShowRGDebugToasts{false};
 
 // --- Define static members of DirectDrawHook ---
@@ -66,7 +462,7 @@ bool DirectDrawHook::isHooked = false;
 
 // --- DPI Awareness Helper ---
 static float GetDpiScale() {
-    HWND hwnd = FindWindow(NULL, "Eternal Fighter Zero");
+    HWND hwnd = FindEFZWindow();  // Use safe multi-instance window finder
     if (!hwnd) return 1.0f;
     
     // Try Windows 10+ API first
@@ -94,9 +490,287 @@ static float GetDpiScale() {
 
 // --- D3D9 Hooking Globals ---
 typedef HRESULT(WINAPI* EndScene_t)(LPDIRECT3DDEVICE9);
+HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice);
 static EndScene_t oEndScene = nullptr;
 static void* g_EndSceneTarget = nullptr; // store target vtable entry for cleanup
+static const char* g_EndSceneTargetSource = "none";
+static std::atomic<bool> g_EndSceneHookEnabled{ false };
+// Track if our EndScene hook has ever been called (for diagnostics)
+static std::atomic<bool> g_EndSceneObserved{ false };
+// Prefer the standalone ImGui host when the in-game render path is known to be unavailable.
+static std::atomic<bool> g_ExternalMenuFallbackNeeded{ false };
+// Track ImGui init state within EndScene with atomic for thread safety
+static std::atomic<bool> g_endSceneImguiInit{ false };
+static std::atomic<bool> g_endSceneRelatchInProgress{ false };
 // --- End D3D9 Globals ---
+
+namespace {
+
+constexpr size_t kEndSceneVtableIndex = 42;
+// DDRAW decomp shows EfzRender::initTextRender/resetDev using ((DWORD*)this + 17)
+// as the active IDirect3DDevice9*.
+constexpr uintptr_t kEfzRenderDeviceOffset = 17u * sizeof(uintptr_t);
+
+struct EndSceneHookCandidate {
+    void* target = nullptr;
+    const char* source = nullptr;
+    uintptr_t renderObject = 0;
+    uintptr_t device = 0;
+    uintptr_t vtable = 0;
+    std::string modulePath;
+};
+
+std::string FormatPointerValue(uintptr_t value) {
+    char buffer[32] = {};
+    _snprintf_s(buffer, sizeof(buffer), _TRUNCATE, "0x%08IX", value);
+    return std::string(buffer);
+}
+
+std::string DescribeModuleForAddress(void* address) {
+    if (!address) {
+        return "<null>";
+    }
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(address, &mbi, sizeof(mbi)) == 0 || !mbi.AllocationBase) {
+        return "<unknown>";
+    }
+
+    char pathBuf[MAX_PATH] = {};
+    const DWORD count = GetModuleFileNameA(reinterpret_cast<HMODULE>(mbi.AllocationBase), pathBuf, MAX_PATH);
+    if (count == 0) {
+        return "<unknown>";
+    }
+    return std::string(pathBuf, count);
+}
+
+bool ReadPointerValue(uintptr_t address, uintptr_t& outValue) {
+    outValue = 0;
+    return address != 0 && SafeReadMemory(address, &outValue, sizeof(outValue)) && outValue != 0;
+}
+
+void LogEndSceneCandidate(const EndSceneHookCandidate& candidate, const char* prefix) {
+    if (!candidate.target) {
+        return;
+    }
+
+    std::ostringstream oss;
+    oss << (prefix ? prefix : "[OVERLAY][D3D9]")
+        << " source=" << (candidate.source ? candidate.source : "unknown")
+        << " target=" << FormatPointerValue(reinterpret_cast<uintptr_t>(candidate.target))
+        << " module=" << candidate.modulePath;
+    if (candidate.renderObject) {
+        oss << " render=" << FormatPointerValue(candidate.renderObject);
+    }
+    if (candidate.device) {
+        oss << " device=" << FormatPointerValue(candidate.device);
+    }
+    if (candidate.vtable) {
+        oss << " vtable=" << FormatPointerValue(candidate.vtable);
+    }
+    LogOut(oss.str(), true);
+}
+
+bool BuildEndSceneCandidateFromRenderObject(uintptr_t renderObject, const char* source, EndSceneHookCandidate& outCandidate) {
+    uintptr_t device = 0;
+    if (!ReadPointerValue(renderObject + kEfzRenderDeviceOffset, device)) {
+        return false;
+    }
+
+    uintptr_t vtable = 0;
+    if (!ReadPointerValue(device, vtable)) {
+        return false;
+    }
+
+    uintptr_t endSceneTarget = 0;
+    if (!ReadPointerValue(vtable + (kEndSceneVtableIndex * sizeof(uintptr_t)), endSceneTarget)) {
+        return false;
+    }
+
+    outCandidate.target = reinterpret_cast<void*>(endSceneTarget);
+    outCandidate.source = source;
+    outCandidate.renderObject = renderObject;
+    outCandidate.device = device;
+    outCandidate.vtable = vtable;
+    outCandidate.modulePath = DescribeModuleForAddress(reinterpret_cast<void*>(endSceneTarget));
+    return true;
+}
+
+bool TryResolveLiveEndSceneFromDdrawExport(EndSceneHookCandidate& outCandidate) {
+    HMODULE ddrawModule = GetModuleHandleA("ddraw.dll");
+    if (!ddrawModule) {
+        return false;
+    }
+
+    using GetEfzRenderFn = void* (__cdecl*)();
+    auto getEfzRender = reinterpret_cast<GetEfzRenderFn>(GetProcAddress(ddrawModule, "getEfzRender"));
+    if (!getEfzRender) {
+        return false;
+    }
+
+    uintptr_t renderObject = reinterpret_cast<uintptr_t>(getEfzRender());
+    if (!renderObject) {
+        LogOut("[OVERLAY][D3D9] getEfzRender export returned null", true);
+        return false;
+    }
+
+    if (!BuildEndSceneCandidateFromRenderObject(renderObject, "live-ddraw-export", outCandidate)) {
+        LogOut("[OVERLAY][D3D9] Failed to resolve EndScene from DDRAW getEfzRender() object", true);
+        return false;
+    }
+    return true;
+}
+
+bool TryResolveLiveEndSceneFromRevival(EndSceneHookCandidate& outCandidate) {
+    HMODULE revivalModule = GetModuleHandleA("EfzRevival.dll");
+    if (!revivalModule) {
+        return false;
+    }
+
+    const uintptr_t renderCtxRva = EFZ_RVA_RenderContextGlobal();
+    if (!renderCtxRva) {
+        return false;
+    }
+
+    uintptr_t renderObject = 0;
+    const uintptr_t renderObjectAddr = reinterpret_cast<uintptr_t>(revivalModule) + renderCtxRva;
+    if (!ReadPointerValue(renderObjectAddr, renderObject)) {
+        LogOut("[OVERLAY][D3D9] Revival render-context pointer is not ready yet at " + FormatPointerValue(renderObjectAddr), detailedLogging.load());
+        return false;
+    }
+
+    if (!BuildEndSceneCandidateFromRenderObject(renderObject, "live-revival-renderctx", outCandidate)) {
+        LogOut("[OVERLAY][D3D9] Failed to resolve EndScene from Revival render context", true);
+        return false;
+    }
+    return true;
+}
+
+bool TryResolveLiveEndSceneCandidate(EndSceneHookCandidate& outCandidate) {
+    if (TryResolveLiveEndSceneFromDdrawExport(outCandidate)) {
+        return true;
+    }
+    return TryResolveLiveEndSceneFromRevival(outCandidate);
+}
+
+bool AttachEndSceneHookForCandidate(const EndSceneHookCandidate& candidate, const char* trigger) {
+    if (!candidate.target) {
+        return false;
+    }
+
+    std::ostringstream oss;
+    oss << "[OVERLAY][D3D9] Attaching EndScene hook"
+        << " trigger=" << (trigger ? trigger : "unknown")
+        << " source=" << (candidate.source ? candidate.source : "unknown")
+        << " target=" << FormatPointerValue(reinterpret_cast<uintptr_t>(candidate.target))
+        << " module=" << candidate.modulePath;
+    LogOut(oss.str(), true);
+
+    if (g_EndSceneTarget && g_EndSceneTarget != candidate.target &&
+        MinHookUtils::HasOwnedTarget(g_EndSceneTarget)) {
+        LogOut("[OVERLAY][D3D9] Previous target retirement pending; retaining its callable original", true);
+        return false;
+    }
+    if (!MinHookUtils::CreateHook(candidate.target, reinterpret_cast<void*>(&HookedEndScene),
+            reinterpret_cast<void**>(&oEndScene), "[OVERLAY][D3D9]", "EndScene", nullptr, &MinHookUtils::TicketFor<&HookedEndScene>())) return false;
+    // Capture immediately, including failed enables and netplay racing attach.
+    g_EndSceneTarget = candidate.target;
+    if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+        MinHookUtils::CloseAdmission("[OVERLAY][D3D9]");
+        return false;
+    }
+    if (!MinHookUtils::EnableHook(candidate.target, "[OVERLAY][D3D9]", "EndScene")) return false;
+
+    g_EndSceneTarget = candidate.target;
+    g_EndSceneTargetSource = candidate.source ? candidate.source : "unknown";
+    DirectDrawHook::isHooked = true;
+    g_EndSceneObserved.store(false, std::memory_order_release);
+    g_EndSceneHookEnabled.store(true, std::memory_order_release);
+    g_ExternalMenuFallbackNeeded.store(false, std::memory_order_release);
+    LogEndSceneCandidate(candidate, "[OVERLAY][D3D9] EndScene hook attached");
+    return true;
+}
+
+void RemoveEndSceneHookTarget(void* target) {
+    if (!target) {
+        return;
+    }
+    MinHookUtils::DisableHook(target, "[OVERLAY][D3D9]", "EndScene");
+    MinHookUtils::RemoveHook(target, "[OVERLAY][D3D9]", "EndScene");
+}
+
+bool TryRelatchEndSceneToLiveTarget(const char* trigger) {
+    bool expected = false;
+    if (!g_endSceneRelatchInProgress.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        return false;
+    }
+
+    EndSceneHookCandidate liveCandidate{};
+    const bool haveLiveCandidate = TryResolveLiveEndSceneCandidate(liveCandidate);
+    if (haveLiveCandidate) {
+        LogEndSceneCandidate(liveCandidate, "[OVERLAY][D3D9] Resolved live EndScene candidate");
+    }
+
+    if (!haveLiveCandidate || !liveCandidate.target) {
+        LogOut(std::string("[OVERLAY][D3D9] Live EndScene relatch skipped trigger=")
+               + (trigger ? trigger : "unknown")
+               + " reason=no-live-candidate",
+               true);
+        g_endSceneRelatchInProgress.store(false, std::memory_order_release);
+        return false;
+    }
+
+    if (liveCandidate.target == g_EndSceneTarget) {
+        LogOut(std::string("[OVERLAY][D3D9] Live EndScene candidate already matches current hook target source=")
+               + g_EndSceneTargetSource,
+               true);
+        g_endSceneRelatchInProgress.store(false, std::memory_order_release);
+        return false;
+    }
+
+    void* previousTarget = g_EndSceneTarget;
+    const char* previousSource = g_EndSceneTargetSource;
+    RemoveEndSceneHookTarget(previousTarget);
+    if (MinHookUtils::HasOwnedTarget(previousTarget)) {
+        // Relatch is optional. Keep the previously working overlay admitted
+        // while its replacement waits for a qualified retirement continuation.
+        if (!g_onlineModeActive.load(std::memory_order_relaxed)) {
+            (void)PracticeHooks::RestoreRetainedTargetAdmission(
+                MinHookUtils::OwnedHooks(), previousTarget, g_EndSceneHookEnabled);
+        }
+        g_endSceneRelatchInProgress.store(false, std::memory_order_release);
+        return false;
+    }
+    g_EndSceneTarget = nullptr;
+    DirectDrawHook::isHooked = false;
+    g_EndSceneHookEnabled.store(false, std::memory_order_release);
+
+    if (AttachEndSceneHookForCandidate(liveCandidate, trigger)) {
+        LogOut(std::string("[OVERLAY][D3D9] Live EndScene relatch succeeded previousSource=")
+               + (previousSource ? previousSource : "unknown")
+               + " newSource=" + (liveCandidate.source ? liveCandidate.source : "unknown"),
+               true);
+        g_endSceneRelatchInProgress.store(false, std::memory_order_release);
+        return true;
+    }
+
+    if (previousTarget && previousTarget != liveCandidate.target) {
+        EndSceneHookCandidate previousCandidate{};
+        previousCandidate.target = previousTarget;
+        previousCandidate.source = previousSource ? previousSource : "previous";
+        previousCandidate.modulePath = DescribeModuleForAddress(previousTarget);
+        if (AttachEndSceneHookForCandidate(previousCandidate, "restore-after-relatch-failure")) {
+            LogOut("[OVERLAY][D3D9] Restored previous EndScene hook after live relatch failure", true);
+        } else {
+            LogOut("[OVERLAY][D3D9] Failed to restore previous EndScene hook after live relatch failure", true);
+        }
+    }
+
+    g_endSceneRelatchInProgress.store(false, std::memory_order_release);
+    return false;
+}
+
+} // namespace
 
 // --- FIX: Add missing implementations for obsolete DirectDraw hooks ---
 HRESULT WINAPI DirectDrawHook::HookedDirectDrawCreate(GUID* lpGUID, LPVOID* lplpDD, IUnknown* pUnkOuter) {
@@ -127,69 +801,161 @@ HRESULT WINAPI DirectDrawHook::HookedFlip(IDirectDrawSurface7* This, IDirectDraw
 
 // --- REVISED AND CORRECTED D3D9 EndScene Hook ---
 HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
-    if (!pDevice) {
+    auto hookExecution = MinHookUtils::EnterExecution(MinHookUtils::TicketFor<&HookedEndScene>());
+    if (!hookExecution.Admitted()) return oEndScene(pDevice);
+    if (!g_EndSceneObserved.load()) g_EndSceneObserved.store(true);
+
+    if (g_onlineModeActive.load(std::memory_order_relaxed)) {
         return oEndScene(pDevice);
     }
+
+    if (!g_EndSceneHookEnabled.load(std::memory_order_acquire)) {
+        return oEndScene(pDevice);
+    }
+
+    EndSceneHangScope _hangScope;
+    SetEndScenePhase("XInput snapshot");
+
+    // Refresh XInput snapshot once per frame at the start of EndScene; other systems read cached state
+    if (XInputShim::IsPollingActive()) XInputShim::RefreshSnapshotOncePerFrame();
+    // Minimal per-frame timing (RAII) to detect stalls without per-frame logs
+    struct EndSceneFrameTimer {
+        std::chrono::steady_clock::time_point t0;
+        EndSceneFrameTimer() : t0(std::chrono::steady_clock::now()) {}
+        ~EndSceneFrameTimer() {
+            using namespace std::chrono;
+            static uint64_t frames = 0;
+            static double   sumMs = 0.0;
+            static double   maxMs = 0.0;
+            static uint32_t gt33 = 0, gt100 = 0, gt250 = 0, gt500 = 0;
+            static steady_clock::time_point lastReport{};
+            static steady_clock::time_point lastMenuSlowReport{};
+            auto t1 = steady_clock::now();
+            double ms = duration<double, std::milli>(t1 - t0).count();
+            frames++; sumMs += ms; if (ms > maxMs) maxMs = ms;
+            if (ms > 33.0)  gt33++;
+            if (ms > 100.0) gt100++;
+            if (ms > 250.0) gt250++;
+            if (ms > 500.0) gt500++;
+            if (ImGuiImpl::IsVisible() && ms >= 100.0
+                && (lastMenuSlowReport.time_since_epoch().count() == 0
+                    || t1 - lastMenuSlowReport >= std::chrono::seconds(1))) {
+                char slowBuf[192];
+                _snprintf_s(slowBuf, sizeof(slowBuf), _TRUNCATE,
+                    "[OVERLAY][D3D9][SLOW] Menu EndScene frame took %.1fms custom=%d",
+                    ms, Config::GetSettings().useCustomMenu ? 1 : 0);
+                LogOut(slowBuf, true);
+                lastMenuSlowReport = t1;
+            }
+            if (lastReport.time_since_epoch().count() == 0) lastReport = t1;
+            if (t1 - lastReport >= std::chrono::seconds(5)) {
+                // Only report if diagnostics are enabled in config
+                if (Config::GetSettings().enableFpsDiagnostics) {
+                    double avgMs = (frames > 0) ? (sumMs / (double)frames) : 0.0;
+                    double fps = (avgMs > 0.0) ? (1000.0 / avgMs) : 0.0;
+                    char buf[256];
+                    _snprintf_s(buf, sizeof(buf), _TRUNCATE,
+                        "[FPS] 5s window: frames=%llu ~fps=%.1f avg=%.2fms max=%.1fms >33ms=%u >100ms=%u >250ms=%u >500ms=%u",
+                        (unsigned long long)frames, fps, avgMs, maxMs, gt33, gt100, gt250, gt500);
+                    LogOut(buf, true);
+                }
+                frames = 0; sumMs = 0.0; maxMs = 0.0; gt33 = gt100 = gt250 = gt500 = 0; lastReport = t1;
+            }
+        }
+    } _frameTimerScope;
+    if (!pDevice) {
+        SetEndScenePhase("original EndScene: null device");
+        return oEndScene(pDevice);
+    }
+
+    SetEndScenePhase("TestCooperativeLevel");
+    if (SkipOverlayForLostDevice(pDevice)) {
+        SetEndScenePhase("original EndScene: lost device");
+        return oEndScene(pDevice);
+    }
+
+    LogActiveD3D9DeviceOnce(pDevice);
 
     // Determine current render target size
+    SetEndScenePhase("QueryRenderTargetSize");
     UINT rtW = 0, rtH = 0;
-    // Always query the device for RT size; do NOT touch ImGui IO before init
-    if (IDirect3DSurface9* rt = nullptr; SUCCEEDED(pDevice->GetRenderTarget(0, &rt)) && rt) {
-        D3DSURFACE_DESC d{};
-        if (SUCCEEDED(rt->GetDesc(&d))) { rtW = d.Width; rtH = d.Height; }
-        rt->Release();
-    }
+    QueryRenderTargetSize(pDevice, rtW, rtH);
     // Only render on the actual 640x480 game surface
     if (!(rtW == 640 && rtH == 480)) {
+        SetEndScenePhase("original EndScene: non-640 render target");
         return oEndScene(pDevice);
     }
 
-    // Hard gate: do not render any UI/overlays during online play
-    if (g_onlineModeActive.load()) {
-        return oEndScene(pDevice);
-    }
+    // Run external overlay renderers (e.g. ImprovedReplayMenu) as early as possible -
+    // BEFORE ImGui initialisation - so they appear on the very first 640x480 frame
+    // instead of waiting ~1s for ImGui to finish initialising. Drawn beneath the
+    // ImGui layer; SEH-guarded per renderer inside DispatchRenderers.
+    SetEndScenePhase("external overlay renderers");
+    OverlayApi::DispatchRenderers(pDevice, rtW, rtH);
 
-    static bool imguiInit = false;
-    if (!imguiInit) {
-        if (ImGuiImpl::Initialize(pDevice)) {
-            imguiInit = true;
-            LogOut("[OVERLAY] ImGui initialized from EndScene hook.", true);
-        } else {
-            LogOut("[OVERLAY] ImGui failed to initialize from EndScene hook.", true);
-            return oEndScene(pDevice); // Don't proceed if init fails
+    // Training's Win32 backend polls input during NewFrame. Do not run it
+    // outside Practice Battle; separate registered renderers keep their call.
+    if (!XInputShim::IsPollingActive()) return oEndScene(pDevice);
+
+    // Thread-safe ImGui initialization (only once)
+    SetEndScenePhase("ImGui initialization");
+    if (!g_endSceneImguiInit.load(std::memory_order_acquire)) {
+        // Try to claim the init slot
+        bool expected = false;
+        if (g_endSceneImguiInit.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+            // We won - initialize ImGui
+            if (ImGuiImpl::Initialize(pDevice)) {
+                g_ExternalMenuFallbackNeeded.store(false, std::memory_order_release);
+                LogOut("[OVERLAY] ImGui initialized from EndScene hook.", true);
+            } else {
+                g_ExternalMenuFallbackNeeded.store(true, std::memory_order_release);
+                LogOut("[OVERLAY] ImGui failed to initialize from EndScene hook.", true);
+                // Keep g_endSceneImguiInit true to prevent retry spam
+            }
+        }
+        // If we lost the race or init failed, just continue to render pass
+        if (!ImGuiImpl::IsInitialized()) {
+            SetEndScenePhase("original EndScene: ImGui unavailable");
+            return oEndScene(pDevice);
         }
     }
 
+    // The title MISSIONS/TUTORIAL screens and the mission/lesson pause menu
+    // draw with the custom-menu fonts, so PrepareFrame (atlas rebuild) must
+    // also run while they are up even though the practice menu itself is
+    // closed.
+    if ((ImGuiImpl::IsVisible() && Config::GetSettings().useCustomMenu) ||
+        PracticeMenu::TitleScreen::WantsDraw() ||
+        Mission::PauseMenu::WantsDraw() ||
+        Mission::TutorialSession::WantsDraw()) {
+        SetEndScenePhase("CustomMenu::PrepareFrame");
+        CustomMenu::PrepareFrame();
+    }
+
     // Start a new ImGui frame and feed inputs before NewFrame
+    SetEndScenePhase("ImGui DX9 NewFrame");
     ImGui_ImplDX9_NewFrame();
     ImGui_ImplWin32_NewFrame();
     // Feed controller/virtual-cursor inputs before NewFrame so they apply this frame
+    SetEndScenePhase("ImGui input feed");
     ImGuiImpl::PreNewFrameInputs();
+    SetEndScenePhase("ImGui::NewFrame");
     ImGui::NewFrame();
     // Post-NewFrame snapshot for diagnostics (throttled)
     ImGuiImpl::PostNewFrameDiagnostics();
 
-    // If the game window is minimized, skip rendering to avoid ImGui asserting on zero-size display
+    // PreNewFrameInputs already set DisplaySize to 640x480
     ImGuiIO& io = ImGui::GetIO();
+
+    // If the game window is minimized, skip rendering to avoid ImGui asserting on zero-size display
     if (io.DisplaySize.x <= 0.0f || io.DisplaySize.y <= 0.0f) {
         ImGui::EndFrame();
+        SetEndScenePhase("original EndScene: minimized");
         return oEndScene(pDevice);
     }
 
     // Helper: fullscreen check
-    auto isFullscreen = []() -> bool {
-        HWND hwnd = FindEFZWindow();
-        if (!hwnd) return false;
-        WINDOWPLACEMENT wp{ sizeof(WINDOWPLACEMENT) };
-        if (!GetWindowPlacement(hwnd, &wp)) return false;
-        RECT wndRect{};
-        if (!GetWindowRect(hwnd, &wndRect)) return false;
-        HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
-        MONITORINFO mi{ sizeof(MONITORINFO) };
-        if (!GetMonitorInfo(mon, &mi)) return false;
-        return EqualRect(&wndRect, &mi.rcMonitor) || EqualRect(&wndRect, &mi.rcWork);
-    };
-    const bool fullscreenNow = isFullscreen();
+    const bool fullscreenNow = IsEfzFullscreenCached();
 
     // Ensure OS cursor is hidden only when the menu is visible and fullscreen; otherwise show OS cursor
     if (ImGuiImpl::IsVisible() && fullscreenNow) {
@@ -200,12 +966,16 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
         ImGui::SetMouseCursor(ImGuiMouseCursor_Arrow);
     }
 
-    // Initialize GIF player only when UI is visible (used on Help tab)
-    static bool gifInit = false;
-    if (!gifInit && ImGuiImpl::IsVisible()) { gifInit = GifPlayer::Initialize(pDevice); }
+    // Initialize the GIF only after a screen actually asks for it. Decoding and
+    // creating D3D textures here on first menu-open is a visible hitch on some drivers.
+    if (ImGuiImpl::IsVisible() && GifPlayer::ShouldAttemptLoad()) {
+        SetEndScenePhase("GifPlayer::Initialize");
+        GifPlayer::Initialize(pDevice);
+    }
 
     // Render our custom text overlays using the background draw list
-    DirectDrawHook::RenderD3D9Overlays(pDevice);
+    SetEndScenePhase("RenderD3D9Overlays");
+    DirectDrawHook::RenderD3D9Overlays(pDevice, rtW, rtH);
 
     // Render the main ImGui configuration window if it's visible
     if (ImGuiImpl::IsVisible()) {
@@ -233,7 +1003,13 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
         style.WindowBorderSize = 0.0f;
         style.FrameBorderSize = 0.0f;
 
-        ImGuiGui::RenderGui();
+        if (Config::GetSettings().useCustomMenu) {
+            SetEndScenePhase("CustomMenu::Render");
+            CustomMenu::Render();
+        } else {
+            SetEndScenePhase("ImGuiGui::RenderGui");
+            ImGuiGui::RenderGui();
+        }
 
         // Restore style
         style.AntiAliasedFill = oldAAFill;
@@ -248,27 +1024,33 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
         style.FrameBorderSize = oldFrameBorder;
     }
 
-    // Advance GIF animation timing at ~24 FPS only when UI is visible
-    if (gifInit && ImGuiImpl::IsVisible()) {
+    // Advance GIF animation timing at ~24 FPS only while a GIF row is visible.
+    if (ImGuiImpl::IsVisible() && GifPlayer::WasRequestedThisFrame()) {
         static double gifAccum = 0.0;
         ImGuiIO& io = ImGui::GetIO();
         double dt = io.DeltaTime > 0.f ? (double)io.DeltaTime : (1.0/60.0);
         gifAccum += dt;
         const double interval = 1.0 / 24.0;
         if (gifAccum >= interval) {
+            SetEndScenePhase("GifPlayer::Update");
             GifPlayer::Update(gifAccum);
             gifAccum = 0.0;
         }
     }
+    GifPlayer::EndFrame();
 
     // End the frame and render all accumulated draw data
+    SetEndScenePhase("ImGui::Render");
     ImGui::EndFrame();
     ImGui::Render();
+
     // Guard again in case size changed mid-frame
     if (io.DisplaySize.x > 0.0f && io.DisplaySize.y > 0.0f) {
+        SetEndScenePhase("ImGui_ImplDX9_RenderDrawData");
         ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
     }
 
+    SetEndScenePhase("original EndScene");
     return oEndScene(pDevice);
 }
 
@@ -309,7 +1091,7 @@ void DirectDrawHook::RenderText(HDC hdc, const std::string& text, int x, int y, 
     const int MAX_TEXT_WIDTH = screenWidth - x - 20;
     
     // Check if this is a trigger overlay by position (right-aligned text)
-    bool isTriggerOverlay = (x >= 510 && y >= 140 && y <= 200);
+    bool isTriggerOverlay = (x >= 510 && y >= 100 && y <= 200);
     
     // For trigger overlay, adjust X position instead of truncating
     int adjustedX = x;
@@ -384,7 +1166,7 @@ void DirectDrawHook::RenderSimpleText(IDirectDrawSurface7* surface, const std::s
         const int MAX_TEXT_WIDTH = screenWidth - x - 20;
         
         // Check if this is a trigger overlay by position (right-aligned text)
-        bool isTriggerOverlay = (x >= 510 && y >= 140 && y <= 200);
+        bool isTriggerOverlay = (x >= 510 && y >= 100 && y <= 200);
         
         // For trigger overlay, adjust X position instead of truncating
         int adjustedX = x;
@@ -426,35 +1208,45 @@ void DirectDrawHook::RenderSimpleText(IDirectDrawSurface7* surface, const std::s
 }
 
 // NEW: Implement the D3D9 overlay renderer
-void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
+void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice, UINT rtW, UINT rtH) {
     // Use background list for borders/messages and foreground for the cursor so it draws above windows
     auto bgList = ImGui::GetBackgroundDrawList();
     if (!bgList)
         return;
 
-    std::lock_guard<std::mutex> lock(messagesMutex);
+    std::vector<OverlayMessage> permanentSnapshot;
+    std::vector<OverlayMessage> temporarySnapshot;
+    {
+        std::lock_guard<std::mutex> lock(messagesMutex);
+        const auto now = std::chrono::steady_clock::now();
+        messages.erase(std::remove_if(messages.begin(), messages.end(),
+            [&](const OverlayMessage& msg) {
+                return !msg.isPermanent && msg.expireTime <= now;
+            }), messages.end());
+        permanentSnapshot.assign(permanentMessages.begin(), permanentMessages.end());
+        temporarySnapshot.assign(messages.begin(), messages.end());
+    }
 
     // If the ImGui menu is visible and there are no messages, skip message rendering only
     // (but still allow the cursor to render on top of the UI)
     const bool menuVisibleNow = ImGuiImpl::IsVisible();
-    bool skipMessageRendering = false;
-    if (menuVisibleNow && !g_ShowOverlayDebugBorders.load()) {
-        bool haveActiveTemp = false;
-        auto nowChk = std::chrono::steady_clock::now();
-        for (const auto& m : messages) { if (m.expireTime > nowChk) { haveActiveTemp = true; break; } }
-        if (!haveActiveTemp && permanentMessages.empty()) {
-            skipMessageRendering = true; // do not return; we still want to draw the cursor
-        }
+    const bool haveMessages = !permanentSnapshot.empty() || !temporarySnapshot.empty();
+    const bool haveCollisionOverlay = CollisionDisplay::IsAnyLayerEnabled();
+    const bool titleScreenActive = PracticeMenu::TitleScreen::WantsDraw();
+    const bool missionPauseActive = Mission::PauseMenu::WantsDraw();
+    const bool tutorialActive = Mission::TutorialSession::WantsDraw();
+    const bool missionRecipeActive = Mission::Render::WantsDraw();
+    if (!menuVisibleNow && !g_ShowOverlayDebugBorders.load() && !haveMessages &&
+        !haveCollisionOverlay && !titleScreenActive && !missionPauseActive &&
+        !tutorialActive && !missionRecipeActive) {
+        return;
     }
 
+    bool skipMessageRendering = menuVisibleNow && !g_ShowOverlayDebugBorders.load() && !haveMessages;
+
     // --- Identify current D3D9 render target (needed for mapping to inner 4:3 area) ---
-    UINT rtW = 0, rtH = 0;
-    if (IDirect3DSurface9* rt = nullptr; SUCCEEDED(pDevice->GetRenderTarget(0, &rt)) && rt) {
-        D3DSURFACE_DESC d{};
-        if (SUCCEEDED(rt->GetDesc(&d))) {
-            rtW = d.Width; rtH = d.Height;
-        }
-        rt->Release();
+    if ((rtW == 0 || rtH == 0) && !QueryRenderTargetSize(pDevice, rtW, rtH)) {
+        return;
     }
 
     // Compute inner 4:3 game area within current RT (letterbox/pillarbox safe)
@@ -470,15 +1262,33 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
         ox = ((float)rtW - gw) * 0.5f;
         oy = ((float)rtH - gh) * 0.5f;
     }
-    // If ImGui menu is visible, skip heavy debug borders to reduce draw load
-    if (g_ShowOverlayDebugBorders.load() && !menuVisibleNow && rtW > 0 && rtH > 0) {
-        static UINT prevW = 0, prevH = 0;
-        if (rtW != prevW || rtH != prevH) {
-            prevW = rtW; prevH = rtH;
+    
+    // Track render target size changes and log when it changes (mutex-protected to prevent duplicate logs)
+    {
+        std::lock_guard<std::mutex> lock(g_rtSizeMutex);
+        
+        // Use atomic exchange to ensure only ONE thread logs initially
+        bool expected = false;
+        if (g_rtSizeLogged.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+            // We won the race - this is the ONLY initial log
+            g_prevRtW = rtW;
+            g_prevRtH = rtH;
             ImVec2 ds = ImGui::GetIO().DisplaySize;
             LogOut("[OVERLAY][D3D9] RT size=" + std::to_string(rtW) + "x" + std::to_string(rtH) +
                    " ImGui.DisplaySize=" + std::to_string((int)ds.x) + "x" + std::to_string((int)ds.y), true);
+        } else if (rtW != g_prevRtW || rtH != g_prevRtH) {
+            // Already logged before AND size changed - log the change
+            g_prevRtW = rtW;
+            g_prevRtH = rtH;
+            ImVec2 ds = ImGui::GetIO().DisplaySize;
+            LogOut("[OVERLAY][D3D9] RT size CHANGED: " + std::to_string(rtW) + "x" + std::to_string(rtH) +
+                   " ImGui.DisplaySize=" + std::to_string((int)ds.x) + "x" + std::to_string((int)ds.y), true);
         }
+        // If exchange failed and size unchanged - do nothing
+    }
+    
+    // If ImGui menu is visible, skip heavy debug borders to reduce draw load
+    if (g_ShowOverlayDebugBorders.load() && !menuVisibleNow && rtW > 0 && rtH > 0) {
         // Full render-target border (red)
         bgList->AddRect(ImVec2(1.5f, 1.5f), ImVec2((float)rtW - 1.5f, (float)rtH - 1.5f), IM_COL32(255, 0, 0, 200), 0.0f, 0, 3.0f);
         // Label
@@ -490,13 +1300,80 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
         bgList->AddRect(ImVec2(ox + 1.0f, oy + 1.0f), ImVec2(ox + gw - 1.0f, oy + gh - 1.0f), IM_COL32(0, 255, 0, 200), 0.0f, 0, 2.0f);
     }
 
+    // Hitbox / hurtbox / collision display. The collector emits 640x480
+    // virtual framebuffer coordinates, so use the same letterbox-safe mapping
+    // as the rest of the custom overlay.
+    if (haveCollisionOverlay) {
+        CollisionDisplay::RebuildFrame();
+        const std::size_t boxCount = CollisionDisplay::GetOverlayBoxCount();
+        for (std::size_t i = 0; i < boxCount; ++i) {
+            CollisionDisplay::OverlayBox box{};
+            if (!CollisionDisplay::GetOverlayBox(i, &box)) {
+                continue;
+            }
+
+            if (box.shape == CollisionDisplay::ShapeDot) {
+                const ImVec2 center(ox + box.x * scale, oy + box.y * scale);
+                const float radius = (box.w > 0.0f ? box.w : 2.5f) * scale;
+                bgList->AddCircleFilled(center, radius, ImColorFromArgb(box.fillArgb), 16);
+                bgList->AddCircle(center, radius + 1.0f, ImColorFromArgb(box.outlineArgb), 16, 1.0f);
+            } else {
+                const ImVec2 p0(ox + box.x * scale, oy + box.y * scale);
+                const ImVec2 p1(ox + (box.x + box.w) * scale, oy + (box.y + box.h) * scale);
+                bgList->AddRectFilled(p0, p1, ImColorFromArgb(box.fillArgb));
+                bgList->AddRect(p0, p1, ImColorFromArgb(box.outlineArgb), 0.0f, 0, 1.0f);
+            }
+        }
+    }
+
+    // FrameBar overlay (toggle-gated). Drawn before other messages so message
+    // text floats on top of the bar if they happen to overlap.
+    if (FrameBar::g_enabled.load() && !menuVisibleNow) {
+        FrameBar::DrawCtx fbCtx;
+        fbCtx.ox = ox;
+        fbCtx.oy = oy;
+        fbCtx.scale = scale;
+        FrameBar::Render(fbCtx);
+    }
+
+    // Mission combo recipe (active-mission only; no-op otherwise). Hidden
+    // under both the practice menu and the session pause menu.
+    // TutorialSession owns its complete in-match presentation. Avoid taking
+    // the ordinary mission renderer's locks/copies only to discover that a
+    // tutorial has no combo recipe to draw.
+    if (!menuVisibleNow && !missionPauseActive && !tutorialActive) {
+        Mission::Render::Draw(pDevice, bgList, ox, oy, scale);
+    }
+
+    // Title MISSIONS/TUTORIAL screens (custom-menu-styled, drawn over the
+    // vanilla title backdrop while the practice submenu delegates to them).
+    if (titleScreenActive) {
+        const VirtualDrawRange range = BeginVirtualDrawRange(bgList);
+        PracticeMenu::TitleScreen::Draw(pDevice, bgList);
+        EndVirtualDrawRange(bgList, range, ox, oy, scale, gw, gh);
+    }
+
+    // Tutorial session surfaces (pages / live requirements / choice / completion).
+    if (tutorialActive && !menuVisibleNow && !missionPauseActive) {
+        const VirtualDrawRange range = BeginVirtualDrawRange(bgList);
+        Mission::TutorialSession::Draw(pDevice, bgList);
+        EndVirtualDrawRange(bgList, range, ox, oy, scale, gw, gh);
+    }
+
+    // Mission/lesson pause menu: dimmed card over the frozen match.
+    if (missionPauseActive) {
+        const VirtualDrawRange range = BeginVirtualDrawRange(bgList);
+        Mission::PauseMenu::Draw(bgList);
+        EndVirtualDrawRange(bgList, range, ox, oy, scale, gw, gh);
+    }
+
     // Optional: draw a single combined background for split frame-advantage messages
     bool faCombinedBgDrawn = false;
     if (!ImGuiImpl::IsVisible()) {
         if (g_FrameAdvantageId != -1 && g_FrameAdvantage2Id != -1) {
             const OverlayMessage* faLeft = nullptr;
             const OverlayMessage* faRight = nullptr;
-            for (const auto& pm : permanentMessages) {
+            for (const auto& pm : permanentSnapshot) {
                 if (pm.id == g_FrameAdvantageId) faLeft = &pm;
                 else if (pm.id == g_FrameAdvantage2Id) faRight = &pm;
             }
@@ -525,7 +1402,7 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
     // Helper lambda to render a message with a background
     auto renderMessage = [&](const OverlayMessage& msg) {
         // Check if this is a trigger overlay by position
-        bool isTriggerOverlay = (msg.xPos >= 510 && msg.yPos >= 140 && msg.yPos <= 200);
+        bool isTriggerOverlay = (msg.xPos >= 510 && msg.yPos >= 100 && msg.yPos <= 200);
         
     // Map starting position from 640x480 virtual space to inner game area within current RT
     ImVec2 textPos(ox + msg.xPos * scale, oy + msg.yPos * scale);
@@ -551,11 +1428,11 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
                 }
             }
             // Draw background behind text only when menu is hidden
-            if (textSize.x > 0.f && textSize.y > 0.f) {
+            if (textSize.x > 0.f && textSize.y > 0.f && msg.backgroundAlpha > 0) {
                 bgList->AddRectFilled(
                     ImVec2(textPos.x - 4, textPos.y - 2),
                     ImVec2(textPos.x + textSize.x + 4, textPos.y + textSize.y + 2),
-                    IM_COL32(0, 0, 0, 180)
+                    IM_COL32(0, 0, 0, msg.backgroundAlpha)
                 );
             }
             }
@@ -576,40 +1453,24 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
         const int cap = limitMessages ? 24 : INT_MAX;
         int drawn = 0;
         // Permanent first
-        for (const auto& msg : permanentMessages) {
+        for (const auto& msg : permanentSnapshot) {
             renderMessage(msg);
             if (++drawn >= cap) break;
         }
         // Then temporary until cap
         if (drawn < cap) {
-            const auto now = std::chrono::steady_clock::now();
-            for (const auto& msg : messages) {
-                if (msg.expireTime > now) {
-                    renderMessage(msg);
-                    if (++drawn >= cap) break;
-                }
+            for (const auto& msg : temporarySnapshot) {
+                renderMessage(msg);
+                if (++drawn >= cap) break;
             }
         }
     }
 
     // --- Fullscreen cursor dot (mouse + gamepad) ---
     // Helper: fullscreen check
-    auto isFullscreen = []() -> bool {
-        HWND hwnd = FindEFZWindow();
-        if (!hwnd) return false;
-        WINDOWPLACEMENT wp{ sizeof(WINDOWPLACEMENT) };
-        if (!GetWindowPlacement(hwnd, &wp)) return false;
-        RECT wndRect{};
-        if (!GetWindowRect(hwnd, &wndRect)) return false;
-        HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
-        MONITORINFO mi{ sizeof(MONITORINFO) };
-        if (!GetMonitorInfo(mon, &mi)) return false;
-        return EqualRect(&wndRect, &mi.rcMonitor) || EqualRect(&wndRect, &mi.rcWork);
-    };
-
     // Draw the overlay cursor only when the ImGui menu is visible and fullscreen
     if (ImGuiImpl::IsVisible()) {
-        const bool fullscreenNow_local = isFullscreen();
+        const bool fullscreenNow_local = IsEfzFullscreenCached();
         if (!fullscreenNow_local) {
             // Do not draw dot in windowed mode
             // (menu still works; OS cursor is visible in windowed)
@@ -622,43 +1483,101 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
                 padPos = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
             }
 
+            const bool customMenuActive = Config::GetSettings().useCustomMenu ||
+                                          ImGuiImpl::IsExternalFallbackHost();
+
+            // Dot visibility policy:
+            //  - Only show after we've moved the physical mouse OR, for the legacy ImGui menu,
+            //    the analog stick (not the dpad).
+            //  - The custom menu owns controller navigation directly, so controller analog must
+            //    not synthesize a fullscreen cursor dot there. Otherwise DirectInput fallback
+            //    devices with bogus resting axes can look like stray mouse movement.
+            //  - If the controller reports dpad and analog simultaneously (mixbox-style), suppress the dot briefly so only nav cursor moves.
+            static bool  s_mouseDotActivated = false;  // latched after real physical mouse movement
+            static bool  s_padDotActivated   = false;  // latched after legacy-menu analog movement
+            static float s_dotSuppressSec = 0.0f;   // suppression cooldown while mixed input is detected
+            static bool  s_prevMenuVis    = false;  // detect menu open edge to reset state
+            // Declare physical mouse tracker near top so we can reset on menu open edge
+            static ImVec2 s_lastPhysMouse(-1.f,-1.f);
+            if (ImGuiImpl::IsVisible() && !s_prevMenuVis) {
+                s_mouseDotActivated = false;
+                s_padDotActivated = false;
+                s_dotSuppressSec = 0.0f;
+                // Reset physical mouse tracker so prior movement doesn't immediately activate the dot
+                s_lastPhysMouse = ImVec2(-1.f, -1.f);
+            }
+            s_prevMenuVis = ImGuiImpl::IsVisible();
+
             // Poll gamepad
             bool padActive = false;
-            XINPUT_STATE state{};
-            if (XInputGetState(0, &state) == ERROR_SUCCESS) {
-                auto applyDeadzone = [](SHORT v, SHORT dz) -> float {
-                    int iv = (int)v;
-                    if (iv > dz) iv -= dz; else if (iv < -dz) iv += dz; else iv = 0;
-                    float n = (float)iv / (32767.0f - dz);
-                    if (n > 1.f) n = 1.f; if (n < -1.f) n = -1.f;
-                    return n;
-                };
-                float nx = applyDeadzone(state.Gamepad.sThumbLX, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
-                float ny = applyDeadzone(state.Gamepad.sThumbLY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
-                float dpadX = 0.f, dpadY = 0.f;
-                if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) dpadX += 1.f;
-                if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT)  dpadX -= 1.f;
-                if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_UP)    dpadY -= 1.f;
-                if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN)  dpadY += 1.f;
+            if (!customMenuActive) {
+                XINPUT_STATE state{};
+                if (XInputShim::CopyCachedState(0, state)) {
+                    auto applyDeadzone = [](SHORT v, SHORT dz) -> float {
+                        int iv = (int)v;
+                        if (iv > dz) iv -= dz; else if (iv < -dz) iv += dz; else iv = 0;
+                        float n = (float)iv / (32767.0f - dz);
+                        if (n > 1.f) n = 1.f; if (n < -1.f) n = -1.f;
+                        return n;
+                    };
+                    float nx = applyDeadzone(state.Gamepad.sThumbLX, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+                    float ny = applyDeadzone(state.Gamepad.sThumbLY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+                    float dpadX = 0.f, dpadY = 0.f;
+                    if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) dpadX += 1.f;
+                    if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT)  dpadX -= 1.f;
+                    if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_UP)    dpadY -= 1.f;
+                    if (state.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN)  dpadY += 1.f;
 
-                const float dt = io.DeltaTime > 0.f ? io.DeltaTime : (1.f/60.f);
-                const bool fast = (state.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
-                const float baseSpeed = fast ? 1800.f : 900.f;
-                const float dpadSpeed = 700.f;
+                    const float dt = io.DeltaTime > 0.f ? io.DeltaTime : (1.f/60.f);
+                    const bool fast      = (state.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
+                    const float baseSpeed = fast ? 1800.f : 900.f;
 
-                if (fabsf(nx) > 0.02f || fabsf(ny) > 0.02f || dpadX != 0.f || dpadY != 0.f ||
-                    (state.Gamepad.wButtons & (XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_X | XINPUT_GAMEPAD_Y))) {
-                    padActive = true;
+                    // Determine input sources
+                    const bool analogMoved = (fabsf(nx) > 0.02f || fabsf(ny) > 0.02f);
+                    const bool dpadMoved   = (dpadX != 0.f || dpadY != 0.f);
+
+                    // Mixed input => suppress dot briefly so only navigational cursor responds
+                    if (analogMoved && dpadMoved) {
+                        s_dotSuppressSec = 0.25f; // ~250 ms
+                    }
+
+                    // Decrement suppression timer
+                    if (s_dotSuppressSec > 0.f) {
+                        s_dotSuppressSec -= dt;
+                        if (s_dotSuppressSec < 0.f) s_dotSuppressSec = 0.f;
+                    }
+
+                    // Activate dot only on pure analog movement (no dpad)
+                    if (analogMoved && !dpadMoved) {
+                        s_padDotActivated = true;
+                        padActive = true;
+                        padPos.x += nx * baseSpeed * dt;
+                        padPos.y += -ny * baseSpeed * dt;
+                    }
                 }
-                if (padActive) {
-                    padPos.x += (nx * baseSpeed + dpadX * dpadSpeed) * dt;
-                    padPos.y += (-ny * baseSpeed + dpadY * dpadSpeed) * dt;
-                }
+            } else {
+                s_dotSuppressSec = 0.0f;
             }
 
-            // Prefer real mouse position if it moved this frame; otherwise fall back to pad
-            const bool mouseMoved = (fabsf(io.MouseDelta.x) + fabsf(io.MouseDelta.y)) > 0.0001f;
-            ImVec2 dot = mouseMoved ? io.MousePos : (padActive ? padPos : io.MousePos);
+            // Physical mouse movement detection (ignore backend remap deltas):
+            // We only activate from real OS cursor movement (>=2px in client space).
+            bool physicalMouseMoved = false;
+            HWND hwnd = FindEFZWindow();
+            if (hwnd) {
+                POINT pt; if (GetCursorPos(&pt) && ScreenToClient(hwnd,&pt)) {
+                    ImVec2 cur((float)pt.x,(float)pt.y);
+                    if (s_lastPhysMouse.x >= 0.f) {
+                        float dx = cur.x - s_lastPhysMouse.x;
+                        float dy = cur.y - s_lastPhysMouse.y;
+                        if ((dx*dx + dy*dy) > 4.f) physicalMouseMoved = true; // >2px
+                    }
+                    s_lastPhysMouse = cur;
+                }
+            }
+            if (physicalMouseMoved) {
+                s_mouseDotActivated = true; // real mouse movement only
+            }
+            ImVec2 dot = physicalMouseMoved ? io.MousePos : (padActive ? padPos : io.MousePos);
 
             // Clamp to ImGui display size (we render on 640x480 RT only)
             float maxX = io.DisplaySize.x - 1.0f;
@@ -667,14 +1586,18 @@ void DirectDrawHook::RenderD3D9Overlays(LPDIRECT3DDEVICE9 pDevice) {
             dot.x = (dot.x < 0.0f ? 0.0f : (dot.x > maxX ? maxX : dot.x));
             dot.y = (dot.y < 0.0f ? 0.0f : (dot.y > maxY ? maxY : dot.y));
 
-            // Draw dot (white filled with dark outline) on the foreground list (above all windows)
-            auto cursorList = ImGui::GetForegroundDrawList();
-            if (!cursorList) cursorList = bgList;
-            const float r = 4.5f;
-            cursorList->PushClipRectFullScreen();
-            cursorList->AddCircleFilled(dot, r, IM_COL32(255, 255, 255, 230), 20);
-            cursorList->AddCircle(dot, r + 1.2f, IM_COL32(0, 0, 0, 200), 24, 2.0f);
-            cursorList->PopClipRect();
+            // Draw dot only when activated (from physical mouse or pure analog) and not suppressed
+            const bool dotActivated = s_mouseDotActivated ||
+                                      (!customMenuActive && s_padDotActivated);
+            if (dotActivated && s_dotSuppressSec <= 0.f) {
+                auto cursorList = ImGui::GetForegroundDrawList();
+                if (!cursorList) cursorList = bgList;
+                const float r = 4.5f;
+                cursorList->PushClipRectFullScreen();
+                cursorList->AddCircleFilled(dot, r, IM_COL32(255, 255, 255, 230), 20);
+                cursorList->AddCircle(dot, r + 1.2f, IM_COL32(0, 0, 0, 200), 24, 2.0f);
+                cursorList->PopClipRect();
+            }
         }
     }
 }
@@ -838,18 +1761,29 @@ bool DirectDrawHook::Initialize() {
     
     LogOut("[OVERLAY] Initializing DirectDraw hook", true);
     
-    // Use the robust FindEFZWindow function instead of FindWindowA
+    // Use the robust FindEFZWindow function (validates PID for multi-instance safety)
     gameWindow = FindEFZWindow();
     if (!gameWindow) {
         LogOut("[OVERLAY] Could not find EFZ window using FindEFZWindow()", true);
         
-        // Try alternative window finding methods
-        gameWindow = FindWindowA(NULL, "Eternal Fighter Zero");
+        // Fallback: try FindWindowA but validate PID
+        DWORD ourPid = GetCurrentProcessId();
+        auto tryWindow = [ourPid](const char* title) -> HWND {
+            HWND hwnd = FindWindowA(NULL, title);
+            if (hwnd) {
+                DWORD windowPid = 0;
+                GetWindowThreadProcessId(hwnd, &windowPid);
+                if (windowPid == ourPid) return hwnd;
+            }
+            return NULL;
+        };
+        
+        gameWindow = tryWindow("Eternal Fighter Zero");
         if (!gameWindow) {
-            gameWindow = FindWindowA(NULL, "Eternal Fighter Zero -Revival-");
+            gameWindow = tryWindow("Eternal Fighter Zero -Revival-");
         }
         if (!gameWindow) {
-            gameWindow = FindWindowA(NULL, "Eternal Fighter Zero -Revival- 1.02e");
+            gameWindow = tryWindow("Eternal Fighter Zero -Revival- 1.02e");
         }
         
         if (!gameWindow) {
@@ -927,11 +1861,11 @@ void DirectDrawHook::AddMessage(const std::string& text, const std::string& cate
     }
 
     auto expireTime = std::chrono::steady_clock::now() + std::chrono::milliseconds(durationMs);
-    messages.push_back({text, color, expireTime, x, y, false, -1, category});
+    messages.push_back({text, color, expireTime, x, y, false, -1, category, 180});
 }
 
 // Add a permanent message
-int DirectDrawHook::AddPermanentMessage(const std::string& text, COLORREF color, int x, int y) {
+int DirectDrawHook::AddPermanentMessage(const std::string& text, COLORREF color, int x, int y, unsigned char backgroundAlpha) {
     std::lock_guard<std::mutex> lock(messagesMutex);
     
     // FIX: Declare newId and increment the static counter
@@ -939,7 +1873,7 @@ int DirectDrawHook::AddPermanentMessage(const std::string& text, COLORREF color,
     
     // FIX: Add the missing 'category' member to the initializer list.
     // Permanent messages don't need a category, so we use an empty string.
-    permanentMessages.push_back({text, color, {}, x, y, true, newId, ""});
+    permanentMessages.push_back({text, color, {}, x, y, true, newId, "", backgroundAlpha});
     
     return newId;
 }
@@ -950,6 +1884,9 @@ void DirectDrawHook::UpdatePermanentMessage(int id, const std::string& newText, 
     
     for (auto& msg : permanentMessages) {
         if (msg.id == id) {
+            if (msg.text == newText && msg.color == newColor) {
+                break;
+            }
             msg.text = newText;
             msg.color = newColor;
             break;
@@ -983,13 +1920,32 @@ void DirectDrawHook::ClearAllMessages() {
     permanentMessages.clear();
 }
 
+// Thread-safe D3D9 init guard
+static std::atomic<bool> s_d3d9InitInProgress{false};
+static std::atomic<bool> s_lastD3D9InitDeferredForNetplay{false};
+
 // --- NEW: D3D9 Hook Initialization and Shutdown ---
 bool DirectDrawHook::InitializeD3D9() {
-    LogOut("[OVERLAY] Attempting to initialize D3D9 hook", detailedLogging.load());
-    
-    if (isHooked) { // FIX: Use the class's static member variable
-        LogOut("[OVERLAY] D3D9 already hooked", true);
-        return true;
+    if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+        s_lastD3D9InitDeferredForNetplay.store(true, std::memory_order_release);
+        LogOut("[OVERLAY] Skipping D3D9 initialization while netplay suspend is active.", detailedLogging.load());
+        return false;
+    }
+
+    s_lastD3D9InitDeferredForNetplay.store(false, std::memory_order_release);
+
+    // Fast path: already hooked
+    if (isHooked) {
+        return SetD3D9Active(true);
+    }
+
+    // Prevent concurrent initialization attempts
+    bool expected = false;
+    if (!s_d3d9InitInProgress.compare_exchange_strong(expected, true)) {
+        // Another thread is initializing - wait and check result
+        LogOut("[OVERLAY] D3D9 init already in progress, waiting...", true);
+        Sleep(100);
+        return isHooked;
     }
     
     // Find the game window (best-effort; not strictly required for dummy device)
@@ -1007,7 +1963,19 @@ bool DirectDrawHook::InitializeD3D9() {
         d3d9Module = LoadLibraryA("d3d9.dll");
         if (!d3d9Module) {
             LogOut("[OVERLAY] Failed to get d3d9.dll module", true);
+            g_ExternalMenuFallbackNeeded.store(true, std::memory_order_release);
+            s_d3d9InitInProgress.store(false);
             return false;
+        }
+    }
+    // Log the module path for d3d9.dll
+    {
+        char pathBuf[MAX_PATH] = {0};
+        DWORD n = GetModuleFileNameA(d3d9Module, pathBuf, MAX_PATH);
+        if (n > 0) {
+            LogOut(std::string("[OVERLAY][D3D9] Using d3d9 module: ") + pathBuf, true);
+        } else {
+            LogOut("[OVERLAY][D3D9] GetModuleFileNameA(d3d9.dll) failed", detailedLogging.load());
         }
     }
     
@@ -1015,14 +1983,37 @@ bool DirectDrawHook::InitializeD3D9() {
     auto Direct3DCreate9_fn = (LPDIRECT3D9(WINAPI*)(UINT))(GetProcAddress(d3d9Module, "Direct3DCreate9"));
     if (!Direct3DCreate9_fn) {
         LogOut("[OVERLAY] Failed to get Direct3DCreate9 address", true);
+        g_ExternalMenuFallbackNeeded.store(true, std::memory_order_release);
+        s_d3d9InitInProgress.store(false);
         return false;
+    }
+    else {
+        char ptrbuf[32] = {};
+        _snprintf_s(ptrbuf, sizeof(ptrbuf), _TRUNCATE, "%p", (void*)Direct3DCreate9_fn);
+        LogOut(std::string("[OVERLAY][D3D9] Direct3DCreate9 at ") + ptrbuf, detailedLogging.load());
     }
     
     // Create a D3D9 object
     LPDIRECT3D9 d3d9 = Direct3DCreate9_fn(D3D_SDK_VERSION);
     if (!d3d9) {
         LogOut("[OVERLAY] Failed to create D3D9 object", true);
+        g_ExternalMenuFallbackNeeded.store(true, std::memory_order_release);
+        s_d3d9InitInProgress.store(false);
         return false;
+    }
+
+    // Log adapter information for diagnostics
+    UINT adapterCount = d3d9->GetAdapterCount();
+    LogOut("[OVERLAY][D3D9] Adapter count: " + std::to_string((unsigned)adapterCount), detailedLogging.load());
+    D3DADAPTER_IDENTIFIER9 ident{};
+    if (SUCCEEDED(d3d9->GetAdapterIdentifier(D3DADAPTER_DEFAULT, 0, &ident))) {
+        LogOut(std::string("[OVERLAY][D3D9] Default adapter: ") + ident.Description, detailedLogging.load());
+        char idbuf[128] = {};
+        _snprintf_s(idbuf, sizeof(idbuf), _TRUNCATE, "VendorID=0x%04X DeviceID=0x%04X SubSysID=0x%08X Revision=%u",
+            ident.VendorId, ident.DeviceId, ident.SubSysId, ident.Revision);
+        LogOut(std::string("[OVERLAY][D3D9] ") + idbuf, detailedLogging.load());
+    } else {
+        LogOut("[OVERLAY][D3D9] GetAdapterIdentifier failed", detailedLogging.load());
     }
     
     // Create a hidden dummy window to safely create a temporary device
@@ -1030,9 +2021,16 @@ bool DirectDrawHook::InitializeD3D9() {
     wc.lpfnWndProc = DefWindowProcA;
     wc.hInstance = GetModuleHandleA(nullptr);
     wc.lpszClassName = "EFZ_TM_D3D9_DUMMY";
-    RegisterClassA(&wc);
+    if (!RegisterClassA(&wc)) {
+        DWORD le = GetLastError();
+        LogOut("[OVERLAY][D3D9] RegisterClassA failed: " + std::to_string((unsigned)le), detailedLogging.load());
+    }
     HWND dummyWnd = CreateWindowExA(0, wc.lpszClassName, "efz_tm_dummy", WS_OVERLAPPEDWINDOW,
                                     CW_USEDEFAULT, CW_USEDEFAULT, 100, 100, nullptr, nullptr, wc.hInstance, nullptr);
+    if (!dummyWnd) {
+        DWORD le = GetLastError();
+        LogOut("[OVERLAY][D3D9] CreateWindowExA(dummy) failed: " + std::to_string((unsigned)le), true);
+    }
 
     // Set up present parameters
     D3DPRESENT_PARAMETERS d3dpp = {};
@@ -1048,33 +2046,80 @@ bool DirectDrawHook::InitializeD3D9() {
     LPDIRECT3DDEVICE9 tempDevice;
     HRESULT hr = d3d9->CreateDevice(
         D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, d3dpp.hDeviceWindow,
-        D3DCREATE_SOFTWARE_VERTEXPROCESSING, &d3dpp, &tempDevice);
+        D3DCREATE_SOFTWARE_VERTEXPROCESSING | D3DCREATE_FPU_PRESERVE, &d3dpp, &tempDevice);
         
     if (FAILED(hr)) {
-        LogOut("[OVERLAY] Failed to create temp D3D9 device: " + std::to_string(hr), true);
+        // Log HRESULT in hex and decimal for easier lookup
+        char hrbuf[64] = {};
+        _snprintf_s(hrbuf, sizeof(hrbuf), _TRUNCATE, "0x%08lX (%ld)", (unsigned long)hr, (long)hr);
+        LogOut(std::string("[OVERLAY] Failed to create temp D3D9 device: ") + hrbuf, true);
+        g_ExternalMenuFallbackNeeded.store(true, std::memory_order_release);
         d3d9->Release();
+        s_d3d9InitInProgress.store(false);
         return false;
     }
     
-    // Get the function pointer for EndScene
+    // Get the baseline function pointer for EndScene from a stock dummy device.
     void** vTable = *reinterpret_cast<void***>(tempDevice);
     void* endSceneAddr = vTable[42]; // EndScene is at index 42
-    g_EndSceneTarget = endSceneAddr;
-    
-    // Create the hook using MinHook
-    LogOut("[OVERLAY] Hooking EndScene", detailedLogging.load());
-    if (MH_CreateHook(endSceneAddr, HookedEndScene, reinterpret_cast<void**>(&oEndScene)) != MH_OK) {
-        LogOut("[OVERLAY] Failed to create hook for EndScene", true);
+    {
+        char ptrbuf1[32] = {}, ptrbuf2[32] = {};
+        _snprintf_s(ptrbuf1, sizeof(ptrbuf1), _TRUNCATE, "%p", (void*)vTable);
+        _snprintf_s(ptrbuf2, sizeof(ptrbuf2), _TRUNCATE, "%p", endSceneAddr);
+        LogOut(std::string("[OVERLAY][D3D9] Device VTable=") + ptrbuf1 + " EndScene@42=" + ptrbuf2, true);
+    }
+
+    EndSceneHookCandidate stockCandidate{};
+    stockCandidate.target = endSceneAddr;
+    stockCandidate.source = "stock-dummy-device";
+    stockCandidate.modulePath = DescribeModuleForAddress(endSceneAddr);
+    LogEndSceneCandidate(stockCandidate, "[OVERLAY][D3D9] Baseline EndScene candidate");
+
+    EndSceneHookCandidate liveCandidate{};
+    const bool haveLiveCandidate = TryResolveLiveEndSceneCandidate(liveCandidate);
+    if (haveLiveCandidate) {
+        LogEndSceneCandidate(liveCandidate, "[OVERLAY][D3D9] Live EndScene candidate");
+        if (liveCandidate.target != stockCandidate.target) {
+            LogOut("[OVERLAY][D3D9] Live EndScene target differs from stock entry; preferring live candidate to chain behind vtable owners", true);
+        } else {
+            LogOut("[OVERLAY][D3D9] Live EndScene target matches stock entry", detailedLogging.load());
+        }
+    } else {
+        LogOut("[OVERLAY][D3D9] Live EndScene candidate unavailable; using stock dummy-device target", true);
+    }
+
+    const EndSceneHookCandidate* primaryCandidate = (haveLiveCandidate && liveCandidate.target) ? &liveCandidate : &stockCandidate;
+    const EndSceneHookCandidate* fallbackCandidate = (primaryCandidate == &liveCandidate && liveCandidate.target != stockCandidate.target)
+        ? &stockCandidate
+        : nullptr;
+
+    if (g_onlineModeActive.load(std::memory_order_relaxed)) {
+        s_lastD3D9InitDeferredForNetplay.store(true, std::memory_order_release);
+        LogOut("[OVERLAY] Aborting EndScene enable because netplay suspend became active during initialization.", true);
         tempDevice->Release();
         d3d9->Release();
+        if (dummyWnd) {
+            DestroyWindow(dummyWnd);
+            UnregisterClassA("EFZ_TM_D3D9_DUMMY", GetModuleHandleA(nullptr));
+        }
+        s_d3d9InitInProgress.store(false);
         return false;
     }
-    
-    // Enable the hook
-    if (MH_EnableHook(endSceneAddr) != MH_OK) {
-        LogOut("[OVERLAY] Failed to enable EndScene hook", true);
+
+    bool attached = AttachEndSceneHookForCandidate(*primaryCandidate, "startup");
+    if (!attached && fallbackCandidate) {
+        LogOut("[OVERLAY][D3D9] Primary live EndScene attach failed; retrying with stock target", true);
+        attached = AttachEndSceneHookForCandidate(*fallbackCandidate, "startup-fallback");
+    }
+    if (!attached) {
+        g_ExternalMenuFallbackNeeded.store(true, std::memory_order_release);
         tempDevice->Release();
         d3d9->Release();
+        if (dummyWnd) {
+            DestroyWindow(dummyWnd);
+            UnregisterClassA("EFZ_TM_D3D9_DUMMY", GetModuleHandleA(nullptr));
+        }
+        s_d3d9InitInProgress.store(false);
         return false;
     }
     
@@ -1086,24 +2131,94 @@ bool DirectDrawHook::InitializeD3D9() {
         UnregisterClassA("EFZ_TM_D3D9_DUMMY", GetModuleHandleA(nullptr));
     }
     
-    isHooked = true;
-    LogOut("[OVERLAY] D3D9 hook initialized successfully", detailedLogging.load());
-    LogOut("[SYSTEM] ImGui D3D9 hook initialized successfully.", detailedLogging.load());  // Keep this one visible
-    LogOut("[IMGUI] ImGui initialized successfully", detailedLogging.load());
-    LogOut("[IMGUI] ImGui initialization succeeded", detailedLogging.load());
-    LogOut("[IMGUI_GUI] GUI state initialized", detailedLogging.load());
+    s_d3d9InitInProgress.store(false);  // Release init lock
     LogOut("[OVERLAY] D3D9 EndScene hook installed successfully.", true);
+
+    // Diagnostic: Verify EndScene is observed soon; if not, try to relatch to the live target once.
+    std::thread([]{
+        Sleep(6000);
+        if (!g_EndSceneObserved.load()) {
+            if (TryRelatchEndSceneToLiveTarget("watchdog")) {
+                Sleep(4000);
+            }
+        }
+        if (!g_EndSceneObserved.load()) {
+            g_ExternalMenuFallbackNeeded.store(true, std::memory_order_release);
+            LogOut("[OVERLAY][D3D9] EndScene not observed within 6s after hook enable.", true);
+            LogOut(std::string("[OVERLAY][D3D9] Current hook source=") + g_EndSceneTargetSource
+                   + " target=" + FormatPointerValue(reinterpret_cast<uintptr_t>(g_EndSceneTarget)),
+                   true);
+            LogOut("[OVERLAY][D3D9] Possible causes: EFZ is not rendering via D3D9 yet (no wrapper), game not yet in a render loop, or another overlay modified the live vtable after our attach.", true);
+        }
+    }).detach();
     return true;
+}
+
+bool DirectDrawHook::WasLastD3D9InitDeferredForNetplay() {
+    return s_lastD3D9InitDeferredForNetplay.load(std::memory_order_acquire);
+}
+
+bool DirectDrawHook::ShouldUseExternalMenuFallback() {
+    return g_ExternalMenuFallbackNeeded.load(std::memory_order_acquire);
+}
+
+bool DirectDrawHook::SetD3D9Active(bool active) {
+    if (!active) {
+        MinHookUtils::CloseAdmission("[OVERLAY][D3D9]");
+        (void)MinHookUtils::DisableOwnedTargets("[OVERLAY][D3D9]", {});
+        (void)MinHookUtils::ReclaimDrainedTargets("[OVERLAY][D3D9]", {});
+    } else if (!MinHookUtils::EnableOwnedTargets("[OVERLAY][D3D9]")) { return false; }
+    if (active && g_onlineModeActive.load(std::memory_order_relaxed)) {
+        return false;
+    }
+
+    if (!g_EndSceneTarget) {
+        if (active && !isHooked) {
+            return InitializeD3D9();
+        }
+        return !active;
+    }
+
+    const bool currentlyEnabled = g_EndSceneHookEnabled.load(std::memory_order_acquire);
+    if (currentlyEnabled == active) {
+        if (active
+            && !g_EndSceneObserved.load(std::memory_order_acquire)
+            && g_ExternalMenuFallbackNeeded.load(std::memory_order_acquire)) {
+            (void)TryRelatchEndSceneToLiveTarget("reactivate");
+        }
+        return active || !MinHookUtils::HasOwnedTarget(g_EndSceneTarget);
+    }
+
+    g_EndSceneHookEnabled.store(active, std::memory_order_release);
+    if (!active) {
+        g_ExternalMenuFallbackNeeded.store(false, std::memory_order_release);
+    } else if (!g_EndSceneObserved.load(std::memory_order_acquire)
+               && g_ExternalMenuFallbackNeeded.load(std::memory_order_acquire)) {
+        (void)TryRelatchEndSceneToLiveTarget("enable");
+    }
+    LogOut(std::string("[OVERLAY] D3D9 EndScene hook ") + (active ? "enabled" : "disabled")
+           + " source=" + g_EndSceneTargetSource,
+           true);
+    return active || !MinHookUtils::HasOwnedTarget(g_EndSceneTarget);
 }
 
 void DirectDrawHook::ShutdownD3D9() {
     LogOut("[OVERLAY] Shutting down D3D9 hooks.", true);
     GifPlayer::Shutdown();
     if (g_EndSceneTarget) {
-        MH_DisableHook(g_EndSceneTarget);
-        MH_RemoveHook(g_EndSceneTarget);
+        RemoveEndSceneHookTarget(g_EndSceneTarget);
+        if (MinHookUtils::HasOwnedTarget(g_EndSceneTarget)) {
+            g_EndSceneHookEnabled.store(false, std::memory_order_release);
+            LogOut("[OVERLAY][D3D9] Retirement pending; retaining original and render resources", true);
+            return;
+        }
         g_EndSceneTarget = nullptr;
     }
+    Mission::TutorialSession::ReleaseRenderThreadState();
+    Mission::Render::ReleaseTextures();
+    g_EndSceneTargetSource = "none";
+    g_EndSceneHookEnabled.store(false, std::memory_order_release);
+    isHooked = false;
     
     // REMOVED: MH_Uninitialize() is now called globally in dllmain.cpp
 }
@@ -1237,4 +2352,3 @@ std::string DirectDrawHook::FitTextToWidthFromLeft(const std::string& text, int 
     
     return result;
 }
-

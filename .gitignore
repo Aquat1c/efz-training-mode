@@ -1,5 +1,7 @@
 # Build directories
 build/
+build_xp*/
+build_*/
 out/
 Debug/
 Release/
@@ -9,7 +11,7 @@ x64/
 Win32/
 bin/
 obj/
-
+.history/
 # CMake files
 CMakeFiles/
 CMakeCache.txt
@@ -20,6 +22,7 @@ CTestTestfile.cmake
 
 # Visual Studio files
 .vs/
+.claude/
 *.vcxproj.user
 *.vcproj.user
 *.suo
@@ -56,7 +59,7 @@ ipch/
 *.vssscc
 .builds
 *.pidb
-
+.zed/
 # Compiled binaries
 *.dll
 *.exe
@@ -81,7 +84,12 @@ ipch/
 *.swp
 *~
 *.sublime-workspace
-
+shared_documentation/
+reference_projects/
+decompilations/
+docs/
+dumpbin/
+tools/
 # OS-specific files
 .DS_Store
 .DS_Store?

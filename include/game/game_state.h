@@ -23,6 +23,41 @@ void DebugDumpScreenState();
 bool IsInGameplayState();
 bool IsInCharacterSelectScreen();
 
+// True only where it is safe and meaningful to open a mod-owned modal surface:
+// the undebounced screen byte is the battle screen, the mode is Practice,
+// both fighters exist, and no netplay session is
+// live. Deliberately built on the raw screen byte rather than
+// GetCurrentGamePhase(): the phase query lags by up to three calls and is not
+// side-effect free, so polling it from the hotkey thread would perturb the
+// frame monitor's own hysteresis.
+bool IsTrainingMenuContext();
+
+enum class FrontendExitTarget : uint8_t {
+    CharacterSelect = 1,
+    Loading = 2,
+    Title = 0,
+};
+
+// Installs lightweight front-end safety hooks:
+// - suppresses EFZ's DirectInput ESC/F-key battle hotkeys while our menu is open
+// - redirects Practice ESC to the training menu instead of EFZ's character-select exit
+// - lets requested battle cleanup return to Title or Loading instead of Character Select
+bool EnsureFrontendControlHooksInstalled();
+
+using BattleUpdateCallback = void (*)(void* battleContext);
+void SetBattleUpdateCallbacks(BattleUpdateCallback beforeUpdate, BattleUpdateCallback afterUpdate);
+
+// Monotonic IDs around the exact game-thread Battle update. Collision-hook
+// events carry the active ID; consumers only read through the completed ID so
+// a monitor tick cannot observe half of one game update.
+uint32_t GetCurrentBattleUpdateBatch();
+uint32_t GetCompletedBattleUpdateBatch();
+
+bool CanRequestFrontendExit(FrontendExitTarget target);
+bool RequestFrontendExit(FrontendExitTarget target);
+// Native battle-entry consumer: validates and writes only the queued allocation.
+bool RequestBattleFrontendExit(FrontendExitTarget target,uintptr_t battleContext,uintptr_t gameSystem);
+
 // Enum to represent the different game phases
 enum class GamePhase : uint8_t {
     Unknown = 0,
@@ -38,3 +73,6 @@ GamePhase GetCurrentGamePhase();
 // Fast inline helper
 inline bool IsMatchPhase() { return GetCurrentGamePhase() == GamePhase::Match; }
 void LogPhaseIfChanged();
+
+// Consumes the existing one-shot Title/Loading route after normal or retained cleanup.
+uint8_t ConsumeBattleFrontendResult(uint8_t nativeResult,bool cleanupHeld,uintptr_t heldGameSystem);

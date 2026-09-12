@@ -1,5 +1,4 @@
 #include <windows.h>
-#include <hidsdi.h>
 #include <xinput.h>
 #include <string>
 #include <vector>
@@ -7,9 +6,16 @@
 #include <setupapi.h>
 #include <devguid.h>
 #include <cfgmgr32.h>
-#pragma comment(lib, "xinput9_1_0.lib")
-#pragma comment(lib, "hid.lib")
+#include "../include/utils/xinput_shim.h"
+#include "../include/utils/xp_compat.h"
+#include "../include/core/logger.h"
+// XInput dynamic load via shim
 #pragma comment(lib, "setupapi.lib")
+
+#if !defined(EFZ_XP_COMPAT)
+#include <hidsdi.h>
+#pragma comment(lib, "hid.lib")
+#endif
 
 // Helper: trim whitespace
 static std::string trim(const std::string& s) {
@@ -20,6 +26,7 @@ static std::string trim(const std::string& s) {
 }
 
 // Try to read ProductString from a HID handle
+#if !defined(EFZ_XP_COMPAT)
 static std::string GetHidProductString(HANDLE h) {
     wchar_t wbuf[256];
     if (HidD_GetProductString(h, wbuf, sizeof(wbuf))) {
@@ -30,6 +37,7 @@ static std::string GetHidProductString(HANDLE h) {
     }
     return std::string();
 }
+#endif
 
 // Best-effort: map RI device to XInput slot by instance path heuristic containing "IG_" index
 static int GuessXInputIndexFromPath(const std::string& path) {
@@ -43,6 +51,12 @@ static int GuessXInputIndexFromPath(const std::string& path) {
 }
 
 std::string GetControllerNameForIndex(int userIndex) {
+    static bool s_loggedXpFallback = false;
+    if (XPCompat::IsEnabled() && !s_loggedXpFallback) {
+        s_loggedXpFallback = true;
+        LogOut("[XP] Controller HID product lookup disabled; using XInput capability names/fallback labels", true);
+    }
+
     // Simple cache to avoid frequent enumeration cost when UI is open
     struct Cache {
         DWORD tick = 0;
@@ -67,10 +81,16 @@ std::string GetControllerNameForIndex(int userIndex) {
 
     if (userIndex < 0 || userIndex > 3) return std::string("All (Any)");
 
-    // If not connected, report clearly
-    XINPUT_STATE st{};
-    if (XInputGetState(userIndex, &st) != ERROR_SUCCESS) {
+    XInputShim::Snapshot snapshot{};
+    XInputShim::CopySnapshot(snapshot);
+    if (!snapshot.IsConnected(userIndex)) {
         return std::string("(Disconnected) Pad ") + std::to_string(userIndex);
+    }
+
+    if (snapshot.genericSlots[userIndex]) {
+        std::string name = snapshot.slotNames[userIndex];
+        if (name.empty()) name = "DirectInput Controller";
+        return name + " (DirectInput)";
     }
 
     // Try cache
@@ -78,7 +98,7 @@ std::string GetControllerNameForIndex(int userIndex) {
 
     // Prefer a stable name based on XInput capabilities (avoids Raw Input mislabeling headsets/duplicates)
     XINPUT_CAPABILITIES caps{};
-    if (XInputGetCapabilities(userIndex, XINPUT_FLAG_GAMEPAD, &caps) == ERROR_SUCCESS) {
+        if (XInputShim::GetCapabilities(userIndex, XINPUT_FLAG_GAMEPAD, &caps) == ERROR_SUCCESS) {
         std::string base;
         switch (caps.SubType) {
             case XINPUT_DEVSUBTYPE_GAMEPAD:       base = "XInput Gamepad"; break;
@@ -127,6 +147,7 @@ std::string GetControllerNameForIndex(int userIndex) {
         int guessed = GuessXInputIndexFromPath(path);
         if (guessed != -1 && guessed != userIndex) continue; // different slot
 
+#if !defined(EFZ_XP_COMPAT)
     // Open for HID product string
         HANDLE h = CreateFileA(path.c_str(), GENERIC_READ | GENERIC_WRITE,
                                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
@@ -140,6 +161,7 @@ std::string GetControllerNameForIndex(int userIndex) {
             CloseHandle(h);
             if (!prod.empty()) { setCached(userIndex, prod); return prod; }
         }
+#endif
     }
 
     // Fallback to a generic but nicer label

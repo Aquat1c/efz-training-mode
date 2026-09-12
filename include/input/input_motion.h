@@ -41,8 +41,6 @@ void DumpInputBuffer(int playerNum);
 std::string GetInputBufferVisualization(int playerNum, int window = 16);
 bool WriteSequentialInputs(int playerNum, const std::vector<InputFrame>& frames);
 bool InjectMotionToBuffer(int playerNum, const std::vector<uint8_t>& motionSequence, int offset = 0);
-void ForceHumanControl(int playerNum);
-void ForceHumanControlThread(int playerNum);
 void LogNextBufferValue(int playerNum);
 
 // Input manipulation functions

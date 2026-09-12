@@ -1,5 +1,6 @@
 #pragma once
 #include <atomic>
+#include <cstdint>
 #include <string>
 #include "../include/core/constants.h"
 #include "../include/game/game_state.h"
@@ -66,6 +67,15 @@ void MonitorAutoJump();
 
 void FrameDataMonitor();
 
+// Lightweight debug info for Practice framestep when checking Frame Advantage
+struct FrameStepDebugInfo {
+    bool active; // true when paused in Practice and FA wait window is active
+    int steps;   // number of step advances since the FA start edge while paused; -1 if inactive
+};
+
+// Thread-safe snapshot of current framestep debug state
+FrameStepDebugInfo GetFrameStepDebugInfo();
+
 // Blockstun and attack level detection
 extern short initialBlockstunMoveID;
 bool IsBlockstunState(short moveID);
@@ -73,18 +83,25 @@ int GetAttackLevel(short blockstunMoveID);
 bool IsDashState(short moveID);
 
 // Auto-action related functions
+enum class AutoActionApplyResult : uint8_t;
 extern short GetActionMoveID(int actionType, int triggerType, int playerNum);
-void ApplyAutoAction(int playerNum, uintptr_t moveIDAddr, short currentMoveID, short prevMoveID);
+AutoActionApplyResult ApplyAutoAction(int playerNum, uintptr_t moveIDAddr,
+                                      short currentMoveID, short prevMoveID,
+                                      uint64_t* motionGenerationOut,
+                                      uint64_t* normalGenerationOut,
+                                      uint64_t* recipeGenerationOut);
 extern bool p1ActionApplied;
 extern bool p2ActionApplied;
 
 // Update function declarations
 void ProcessTriggerDelays();
+void ProcessTriggerDelays(short moveID1, short moveID2, short prevMoveID1, short prevMoveID2);
 
 // Add these function declarations:
 void MonitorAutoActions();
 void ResetActionFlags();
 void ClearDelayStatesIfNonActionable();
+void ClearDelayStatesIfNonActionable(short moveID1, short moveID2, short prevMoveID1, short prevMoveID2, const char* source);
 void UpdateTriggerOverlay();
 bool CheckAndHandleInvalidGameState(GameMode currentMode); // Changed signature
 void ReinitializeOverlays();
@@ -93,3 +110,6 @@ void ReinitializeOverlays();
 bool AreCharactersInitialized();
 bool IsValidGameMode(GameMode mode);
 void UpdateStatsDisplay();
+
+// Requires closed monitor work and restored input/feature ownership.
+void ResetFrameMonitorTimeline();

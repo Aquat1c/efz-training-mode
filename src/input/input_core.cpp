@@ -6,6 +6,7 @@
     // For GetEFZBase()
 #include "../include/input/input_buffer.h" // For INPUT_BUFFER_* constants
 #include <sstream>
+#include <cstring>
 
 // Decode input mask to readable string
 std::string DecodeInputMask(uint8_t inputMask) {
@@ -54,7 +55,10 @@ uintptr_t GetPlayerPointer(int playerNum) {
 
 // Write to the player's immediate input registers
 bool WritePlayerInputImmediate(int playerNum, uint8_t inputMask) {
-    uintptr_t playerPtr = GetPlayerPointer(playerNum);
+    return WritePlayerInputImmediateAt(GetPlayerPointer(playerNum), inputMask);
+}
+
+bool WritePlayerInputImmediateAt(uintptr_t playerPtr, uint8_t inputMask) {
     if (!playerPtr) return false;
     
     // Extract direction and button components
@@ -75,28 +79,24 @@ bool WritePlayerInputImmediate(int playerNum, uint8_t inputMask) {
     if (down) vertValue = 1;
     else if (up) vertValue = 255;
     
-    // Write direction values
-    if (!SafeWriteMemory(playerPtr + INPUT_HORIZONTAL_OFFSET, &horzValue, sizeof(uint8_t)))
+    static_assert(INPUT_VERTICAL_OFFSET == INPUT_HORIZONTAL_OFFSET + 1 &&
+                  INPUT_BUTTON_A_OFFSET == INPUT_HORIZONTAL_OFFSET + 2 &&
+                  INPUT_BUTTON_B_OFFSET == INPUT_HORIZONTAL_OFFSET + 3 &&
+                  INPUT_BUTTON_C_OFFSET == INPUT_HORIZONTAL_OFFSET + 4 &&
+                  INPUT_BUTTON_D_OFFSET == INPUT_HORIZONTAL_OFFSET + 5,
+                  "Immediate input registers must remain contiguous");
+    const uint8_t staged[6] = {horzValue, vertValue,
+        uint8_t((inputMask & GAME_INPUT_A) != 0), uint8_t((inputMask & GAME_INPUT_B) != 0),
+        uint8_t((inputMask & GAME_INPUT_C) != 0), uint8_t((inputMask & GAME_INPUT_D) != 0)};
+    // The caller retains its producer/control ownership through this copy.
+    // Six bytes are not atomic; SEH reports an access fault, not native lifetime.
+    // Fighter data is already writable and must not change page protections.
+    __try {
+        std::memcpy(reinterpret_cast<void*>(playerPtr + INPUT_HORIZONTAL_OFFSET), staged, sizeof(staged));
+        return true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
         return false;
-    if (!SafeWriteMemory(playerPtr + INPUT_VERTICAL_OFFSET, &vertValue, sizeof(uint8_t)))
-        return false;
-        
-    // Write button values (1=pressed, 0=released)
-    uint8_t buttonA = (inputMask & GAME_INPUT_A) ? 1 : 0;
-    uint8_t buttonB = (inputMask & GAME_INPUT_B) ? 1 : 0;
-    uint8_t buttonC = (inputMask & GAME_INPUT_C) ? 1 : 0;
-    uint8_t buttonD = (inputMask & GAME_INPUT_D) ? 1 : 0;
-    
-    if (!SafeWriteMemory(playerPtr + INPUT_BUTTON_A_OFFSET, &buttonA, sizeof(uint8_t)))
-        return false;
-    if (!SafeWriteMemory(playerPtr + INPUT_BUTTON_B_OFFSET, &buttonB, sizeof(uint8_t)))
-        return false;
-    if (!SafeWriteMemory(playerPtr + INPUT_BUTTON_C_OFFSET, &buttonC, sizeof(uint8_t)))
-        return false;
-    if (!SafeWriteMemory(playerPtr + INPUT_BUTTON_D_OFFSET, &buttonD, sizeof(uint8_t)))
-        return false;
-    
-    return true;
+    }
 }
 
 // Write to the circular buffer (for move history/detection)
@@ -114,9 +114,11 @@ bool WritePlayerInputToBuffer(int playerNum, uint8_t inputMask) {
     if (!SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + bufferIndex, &inputMask, sizeof(uint8_t)))
         return false;
     
-    // Debug logging for dash investigation
-    LogOut("[BUFFER_WRITE] P" + std::to_string(playerNum) + " wrote " + DecodeInputMask(inputMask) + 
-           " at index " + std::to_string(currentIndex) + " -> " + std::to_string(currentIndex + 1), true);
+    // Debug logging for dash investigation (gate under detailedLogging)
+    if (detailedLogging.load()) {
+        LogOut("[BUFFER_WRITE] P" + std::to_string(playerNum) + " wrote " + DecodeInputMask(inputMask) + 
+               " at index " + std::to_string(currentIndex) + " -> " + std::to_string(currentIndex + 1), true);
+    }
     
     // Increment buffer index
     currentIndex = (currentIndex + 1) % INPUT_BUFFER_SIZE;
@@ -149,8 +151,10 @@ bool ResetPlayerInputBufferIndex(int playerNum) {
     uintptr_t playerPtr = GetPlayerPointer(playerNum);
     if (!playerPtr) return false;
     
-    // Dump buffer state before reset
-    DumpInputBuffer(playerNum, "BEFORE_INDEX_RESET");
+    // Dump buffer state before reset (debug only)
+    if (detailedLogging.load()) {
+        DumpInputBuffer(playerNum, "BEFORE_INDEX_RESET");
+    }
     
     uint16_t zero = 0;
     if (!SafeWriteMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &zero, sizeof(uint16_t))) {
@@ -159,19 +163,26 @@ bool ResetPlayerInputBufferIndex(int playerNum) {
     }
     LogOut("[INPUT] Reset buffer index to 0 for P" + std::to_string(playerNum), true);
     
-    // Dump after reset
-    DumpInputBuffer(playerNum, "AFTER_INDEX_RESET");
+    // Dump after reset (debug only)
+    if (detailedLogging.load()) {
+        DumpInputBuffer(playerNum, "AFTER_INDEX_RESET");
+    }
     
     return true;
 }
 
-// Read MoveID (offset 610 = 0x262)
+// Read MoveID using authoritative offset (MOVE_ID_OFFSET)
 uint16_t GetPlayerMoveID(int playerNum) {
     uintptr_t playerPtr = GetPlayerPointer(playerNum);
-    if (!playerPtr) return 99; // Default "no move" value
-    
-    uint16_t moveID = 99;
-    SafeReadMemory(playerPtr + 610, &moveID, sizeof(uint16_t));
+    if (!playerPtr) {
+        LogOut("[BUFFER_DUMP] GetPlayerMoveID: null playerPtr for P" + std::to_string(playerNum), true);
+        return 0; // safest fallback: idle
+    }
+    uint16_t moveID = 0;
+    if (!SafeReadMemory(playerPtr + MOVE_ID_OFFSET, &moveID, sizeof(uint16_t))) {
+        LogOut("[BUFFER_DUMP] GetPlayerMoveID: failed to read MoveID for P" + std::to_string(playerNum), true);
+        return 0;
+    }
     return moveID;
 }
 
@@ -190,16 +201,13 @@ void DumpInputBuffer(int playerNum, const std::string& context) {
     // Read MoveID
     uint16_t moveID = GetPlayerMoveID(playerNum);
     
-    // Read current move animation ID (offset 8 = 0x08)
-    uint16_t currentMove = 0;
-    SafeReadMemory(playerPtr + 8, &currentMove, sizeof(uint16_t));
+    // MoveID is authoritative; drop the duplicate/ambiguous CurrentAnim read
     
     // Read last 15 positions (game checks last 5 for dash, but we want more context)
     std::stringstream ss;
     ss << "[BUFFER_DUMP][" << context << "] P" << playerNum 
        << " Index=" << bufferIndex 
-       << " MoveID=" << moveID
-       << " CurrentAnim=" << currentMove
+    << " MoveID=" << moveID
        << " Last15=[";
     
     int startPos = (bufferIndex >= 15) ? (bufferIndex - 15) : 0;
@@ -228,26 +236,103 @@ void DumpInputBuffer(int playerNum, const std::string& context) {
 }
 
 // Zero out the entire circular buffer region and optionally reset index to 0.
-bool ClearPlayerInputBuffer(int playerNum, bool resetIndex) {
-    uintptr_t playerPtr = GetPlayerPointer(playerNum);
+static bool ClearPlayerInputBufferAt(uintptr_t playerPtr, int playerNum,
+                                     bool resetIndex) {
     if (!playerPtr) return false;
     
     // Dump before clearing for debugging
-    DumpInputBuffer(playerNum, "BEFORE_CLEAR");
-    
-    uint8_t neutral = 0x00;
-    bool ok = true;
-    for (uint16_t i = 0; i < INPUT_BUFFER_SIZE; ++i) {
-        if (!SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + i, &neutral, sizeof(uint8_t))) {
-            ok = false; // continue attempting writes
-        }
+    if (playerNum && detailedLogging.load()) {
+        DumpInputBuffer(playerNum, "BEFORE_CLEAR");
     }
+    
+    // Bulk clear the entire circular buffer region in one write
+    std::vector<uint8_t> zeros(INPUT_BUFFER_SIZE, 0x00);
+    bool ok = SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET, zeros.data(), INPUT_BUFFER_SIZE);
     if (resetIndex) {
         uint16_t zero = 0;
         if (!SafeWriteMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &zero, sizeof(uint16_t))) {
             ok = false;
         }
     }
-    LogOut(std::string("[INPUT] Cleared input buffer for P") + std::to_string(playerNum) + (resetIndex?" (index reset)":""), true);
+    if (playerNum) LogOut(std::string("[INPUT] Cleared input buffer for P") + std::to_string(playerNum) + (resetIndex?" (index reset)":""), true);
     return ok;
+}
+
+bool ClearPlayerInputBuffer(int playerNum, bool resetIndex) {
+    return ClearPlayerInputBufferAt(GetPlayerPointer(playerNum), playerNum, resetIndex);
+}
+
+// Clear engine command flags (command buffer and dash command) to avoid post-macro transitions
+bool ClearPlayerCommandFlags(int playerNum) {
+    const bool cleared = ClearPlayerCommandFlagsAt(GetPlayerPointer(playerNum));
+    LogOut(std::string("[INPUT] Cleared command/dash flags for P") + std::to_string(playerNum), true);
+    return cleared;
+}
+
+bool ClearPlayerCommandFlagsAt(uintptr_t playerPtr) {
+    if (!playerPtr) return false;
+    uint8_t zero = 0;
+    bool ok1 = SafeWriteMemory(playerPtr + COMMAND_BUFFER_OFFSET, &zero, sizeof(uint8_t));
+    bool ok2 = SafeWriteMemory(playerPtr + DASH_COMMAND_OFFSET, &zero, sizeof(uint8_t));
+    return ok1 && ok2;
+}
+
+// Write the complete 16-bit sentinel used by EFZ's command consumers.  A
+// one-byte write leaves the old high byte behind and can turn a neutralized
+// command into a different, still-live token.
+bool NeutralizeMotionToken(int playerNum) {
+    uintptr_t playerPtr = GetPlayerPointer(playerNum);
+    if (!playerPtr) return false;
+    const uint16_t token = 99;
+    bool ok = SafeWriteMemory(playerPtr + MOTION_TOKEN_OFFSET,
+                              &token, sizeof(token));
+    if (detailedLogging.load()) {
+        LogOut(std::string("[INPUT] Neutralized motion token for P") + std::to_string(playerNum) +
+               std::string(" -> 99 (word)"), true);
+    }
+    return ok;
+}
+
+// Perform a thorough cleanup after toggling control or finishing macro playback
+bool FullCleanupAfterToggle(int playerNum) {
+    const bool cleared = FullCleanupAfterToggleAt(GetPlayerPointer(playerNum));
+    LogOut(std::string("[INPUT] Full cleanup after toggle for P") + std::to_string(playerNum), true);
+    return cleared;
+}
+
+bool FullCleanupAfterToggleAt(uintptr_t playerPtr) {
+    if (!playerPtr) return false;
+    bool okAll = true;
+
+    // 1) Neutralize motion token
+    const uint16_t token = 99;
+    okAll = SafeWriteMemory(playerPtr + MOTION_TOKEN_OFFSET, &token, sizeof(token)) && okAll;
+
+    // 2) Clear command/latch bytes and dash timer
+    uint8_t zero = 0;
+    okAll = SafeWriteMemory(playerPtr + INPUT_LATCH1_OFFSET, &zero, sizeof(uint8_t)) && okAll;
+    okAll = SafeWriteMemory(playerPtr + INPUT_LATCH2_OFFSET, &zero, sizeof(uint8_t)) && okAll;
+    okAll = SafeWriteMemory(playerPtr + DASH_TIMER_OFFSET, &zero, sizeof(uint8_t)) && okAll;
+
+    // 3) Clear circular buffer and reset head
+    okAll = ClearPlayerInputBufferAt(playerPtr, 0, /*resetIndex=*/true) && okAll;
+
+    // 4) Clear immediate registers to neutral
+    okAll = WritePlayerInputImmediateAt(playerPtr, GAME_INPUT_NEUTRAL) && okAll;
+
+    // 5) Clear EFZ's native held-button and human-direction bookkeeping. These
+    // are populated by processCharacterInput independently of +392..397; if
+    // they survive a macro/controller hand-off, the next identical button may
+    // not produce a rising edge and Practice can retain a stale block direction.
+    const uint32_t zero32 = 0;
+    const uint16_t zero16 = 0;
+    constexpr uintptr_t heldOffsets[] = {400, 404, 408, 412};
+    for (uintptr_t offset : heldOffsets) {
+        okAll = SafeWriteMemory(playerPtr + offset, &zero32, sizeof(zero32)) &&
+                okAll;
+    }
+    okAll = SafeWriteMemory(playerPtr + 334, &zero16, sizeof(zero16)) && okAll;
+    okAll = SafeWriteMemory(playerPtr + 336, &zero32, sizeof(zero32)) && okAll;
+
+    return okAll;
 }

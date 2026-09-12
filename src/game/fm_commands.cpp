@@ -6,6 +6,7 @@
 #include "../include/core/logger.h"
 #include "../include/input/input_core.h"
 #include "../include/input/input_freeze.h"
+#include "../include/input/auto_action_motion_transaction.h"
 #include "../include/game/fm_commands.h"
 #include "../include/utils/utilities.h"
 #include <vector>
@@ -142,8 +143,8 @@ const std::vector<FinalMemoryCommand>& GetFinalMemoryCommands() {
         cmds.push_back({CHAR_ID_KAORI, "Kaori", BuildPattern({"6*6","5*3","6*6","5*3","6*6","6S*6"}, facingRight), GateAlways, nullptr});
     // Kanna 236236C - TESTED
     cmds.push_back({CHAR_ID_KANNA, "Kanna", BuildPattern({"2","3","6","2","3","6","5C"}, facingRight), GateAlways, nullptr});
-    // Kano 214236S gated by recoil guard - No way to test since we don't have RG implemented yet
-    cmds.push_back({CHAR_ID_KANO, "Kano", BuildPattern({"2","1","4","2","3","6","S"}, facingRight), GateKanoRG, "Requires recoil guard state"});
+    // Kano 2141236S gated by recoil guard.
+    cmds.push_back({CHAR_ID_KANO, "Kano", BuildPattern({"2","1","4","1","2","3","6","S"}, facingRight), GateKanoRG, "Requires recoil guard state"});
     // Mai (two contexts, same input for now) - TESTED
     cmds.push_back({CHAR_ID_MAI, "Mai", BuildPattern({"2","3","6","2","3","6","S"}, facingRight), GateMaiAwakening, "Awakening context not enforced"});
     // Makoto 263S - TESTED
@@ -192,13 +193,19 @@ const std::vector<FinalMemoryCommand>& GetFinalMemoryCommands() {
     // Shiori sequential B C - TESTED
     cmds.push_back({CHAR_ID_SHIORI, "Shiori", BuildPattern({"2","3","6","2","3","6","5B","5C"}, facingRight), GateAlways, nullptr});
     // Unknown snapshot: C gap B gap forward cluster gap A gap A - TESTED
-    cmds.push_back({CHAR_ID_MIZUKAB, "Unknown", BuildPattern({
+    cmds.push_back({CHAR_ID_UNKNOWN, "Unknown", BuildPattern({
         "5C*2","5*3","5B*2","5*3","6*3","5*3","5A*2","5*3","5A*2"
     }, facingRight), GateAlways, "Refined from buffer"});
     return cmds;
 }
 
-bool ExecuteFinalMemory(int playerNum, int characterId) {
+bool ExecuteFinalMemory(int playerNum, int characterId,
+                        int consumerWaitPasses, uint64_t* generationOut,
+                        P2AutoActionMotionSubmitResult* submitResultOut) {
+    if (generationOut) *generationOut = 0;
+    if (submitResultOut) {
+        *submitResultOut = P2AutoActionMotionSubmitResult::Invalid;
+    }
     uintptr_t playerPtr = GetPlayerPointer(playerNum);
     if (!playerPtr) return false;
     bool facingRight = GetPlayerFacingDirection(playerNum);
@@ -243,11 +250,40 @@ bool ExecuteFinalMemory(int playerNum, int characterId) {
                    " pattern=" + postMirrorDesc +
                    (facingRight ? "" : std::string(" (src=") + preMirrorDesc + ")"), true);
             bool ok = false;
-            // Use index advance if defined for this FM to virtually place current index later.
-            if (c.indexAdvance > 0) {
-                ok = FreezeBufferWithPattern(playerNum, pat, c.indexAdvance);
+            // P2 has always dispatched through the generation-owned pattern
+            // transaction. P1 joins it only when P1 is the dummy (after a
+            // control swap): the legacy buffer freeze never humanizes an
+            // AI-flagged fighter, so the FM silently never came out on a P1
+            // dummy. A human P1 - the default session's "Run P1 FM" button -
+            // keeps the legacy freeze route it has always used, so the no-swap
+            // path is unchanged.
+            const bool useTransaction =
+                (playerNum == 2) ||
+                (playerNum == ResolveAutoActionTargetPlayer());
+            if (useTransaction) {
+                // An index advance means the FM detector expects the terminating
+                // button to be a few history entries old. Append those neutral
+                // entries; the last neutral is supplied by the native poll.
+                if (c.indexAdvance > 0) {
+                    pat.insert(pat.end(), static_cast<size_t>(c.indexAdvance), 0);
+                }
+                const AutoActionMotionSubmitResult submit =
+                    SubmitAutoActionPatternTransaction(
+                        playerNum, pat, facingRight, consumerWaitPasses,
+                        generationOut);
+                if (submitResultOut) *submitResultOut = submit;
+                ok = submit == AutoActionMotionSubmitResult::Accepted;
             } else {
-                ok = FreezeBufferWithPattern(playerNum, pat);
+                ok = (c.indexAdvance > 0)
+                    ? FreezeBufferWithPattern(playerNum, pat, c.indexAdvance)
+                    : FreezeBufferWithPattern(playerNum, pat);
+                if (submitResultOut) {
+                    // The command/pattern is valid at this point. A legacy
+                    // freezer rejection is a temporary owner collision.
+                    *submitResultOut = ok
+                        ? P2AutoActionMotionSubmitResult::Accepted
+                        : P2AutoActionMotionSubmitResult::Busy;
+                }
             }
             if (!ok) {
                 LogOut(std::string("[FM] Failed to freeze buffer for ") + c.name, true);

@@ -2,11 +2,17 @@
 #include "../include/game/auto_action.h"
 #include "../include/core/constants.h"
 #include "../include/utils/utilities.h"
+#include "../include/utils/network.h"
+#include "../include/game/game_state.h"
+#include "../include/game/validation_metrics.h" // validation metrics instrumentation
 
 #include "../include/core/memory.h"
 #include "../include/core/logger.h"
 #include "../include/input/input_motion.h"
 #include "../include/input/immediate_input.h"
+#include "../include/input/input_hook.h"
+#include "../include/input/input_buffer.h"
+#include "../include/input/motion_system.h"
 #include <chrono>
 #include <cmath>
 
@@ -18,7 +24,15 @@ static bool ForwardIsRightForPlayer(int p) {
     // Cache X position addresses to avoid repeated ResolvePointer calls
     static uintptr_t cachedBase = 0;
     static uintptr_t xAddr[3] = { 0, 0, 0 }; // [1]=P1, [2]=P2
+    static uint32_t cachedGeneration = 0;
     uintptr_t baseNow = GetEFZBase();
+    const uint32_t generationNow = GetRuntimeLifecycleGeneration();
+    if (generationNow != cachedGeneration) {
+        cachedBase = 0;
+        xAddr[1] = 0;
+        xAddr[2] = 0;
+        cachedGeneration = generationNow;
+    }
     if (baseNow != 0 && baseNow != cachedBase) {
         cachedBase = baseNow;
         xAddr[1] = ResolvePointer(baseNow, EFZ_BASE_OFFSET_P1, XPOS_OFFSET);
@@ -113,26 +127,25 @@ void ApplyJump(uintptr_t moveIDAddr, int playerNum, int jumpType) {
     }
 }
 
-// Add this function to check if auto-action is active
 bool IsAutoActionActiveForPlayer(int playerNum) {
-    if (!autoActionEnabled.load()) {
+    // A timed ImmediateInput press is an owned edge (wake jump/block, etc.).
+    // Auto-jump uses the untimed Set path itself, so checking remaining ticks
+    // distinguishes another producer without mistaking its own held direction.
+    if (ImmediateInput::GetRemainingTicks(playerNum) > 0 ||
+        IsAutoActionNormalPulseActive(playerNum) ||
+        IsAutoActionNormalPulseOwningImmediateRegisters(playerNum) ||
+        GetMotionQueueSnapshot(playerNum).active ||
+        (g_bufferFreezingActive.load(std::memory_order_acquire) &&
+         (g_activeFreezePlayer.load(std::memory_order_acquire) == 0 ||
+          g_activeFreezePlayer.load(std::memory_order_acquire) == playerNum))) {
+        return true;
+    }
+
+    if (!HasAnyAutoActionTriggerEnabled()) {
         return false;
     }
-    
-    int targetPlayer = autoActionPlayer.load(); // 1=P1, 2=P2, 3=Both
-    bool affectsThisPlayer = (targetPlayer == playerNum || targetPlayer == 3);
-    
-    if (!affectsThisPlayer) {
-        return false;
-    }
-    
-    // Check if any triggers are enabled
-    bool anyTriggerEnabled = triggerAfterBlockEnabled.load() || 
-                            triggerOnWakeupEnabled.load() || 
-                            triggerAfterHitstunEnabled.load() || 
-                            triggerAfterAirtechEnabled.load();
-    
-    if (!anyTriggerEnabled) {
+
+    if (ResolveAutoActionTargetPlayer() != playerNum) {
         return false;
     }
     
@@ -147,6 +160,10 @@ bool IsAutoActionActiveForPlayer(int playerNum) {
 }
 
 void MonitorAutoJump() {
+    // Only operate in offline Practice mode
+    if (GetCurrentGameMode() != GameMode::Practice) return;
+    if (IsNetplaySuspendActive()) return;
+    
     using clock = std::chrono::steady_clock;
     // We now hold the UP input continuously while enabled; timers retained for compatibility but not required
     static clock::time_point holdUntil[3] = { clock::time_point(), clock::time_point(), clock::time_point() };
@@ -160,7 +177,15 @@ void MonitorAutoJump() {
     auto isGrounded = [](int p) -> bool {
         static uintptr_t s_cachedBase = 0;
         static uintptr_t s_yAddr[3] = { 0, 0, 0 };
+        static uint32_t s_cachedGeneration = 0;
         uintptr_t baseNow = GetEFZBase();
+        const uint32_t generationNow = GetRuntimeLifecycleGeneration();
+        if (generationNow != s_cachedGeneration) {
+            s_cachedBase = 0;
+            s_yAddr[1] = 0;
+            s_yAddr[2] = 0;
+            s_cachedGeneration = generationNow;
+        }
         if (baseNow != 0 && baseNow != s_cachedBase) {
             s_cachedBase = baseNow;
             s_yAddr[1] = ResolvePointer(baseNow, EFZ_BASE_OFFSET_P1, YPOS_OFFSET);
@@ -174,9 +199,13 @@ void MonitorAutoJump() {
     };
 
     auto releaseIfOurJump = [](int p) {
+        // Don't interfere with timed presses (e.g., wake-up jumps)
+        int remainingTicks = ImmediateInput::GetRemainingTicks(p);
+        if (remainingTicks > 0) return;
+        
         uint8_t mask = ImmediateInput::GetCurrentDesired(p);
         bool looksLikeJump = (mask & MOTION_INPUT_UP) && ((mask & MOTION_INPUT_BUTTON) == 0);
-        if (looksLikeJump) {
+        if (looksLikeJump) { 
             ImmediateInput::Clear(p);
         }
     };
@@ -214,6 +243,7 @@ void MonitorAutoJump() {
             // Edge-based auto-jump: neutral on landing, then UP on next tick
             bool grounded = isGrounded(1);
             bool landing = grounded && !s_wasGrounded[1];
+            if (landing && ValidationMetricsEnabled()) { GetValidationMetrics().p1LandingEdges++; }
             s_wasGrounded[1] = grounded;
             bool fwdRight = ForwardIsRightForPlayer(1);
             uint8_t wantMask = MOTION_INPUT_UP | (
@@ -226,6 +256,7 @@ void MonitorAutoJump() {
             if (landing) {
                 // Force a brief neutral to create a clean edge
                 s_forceNeutralFrames[1] = 1;
+                if (ValidationMetricsEnabled()) { GetValidationMetrics().p1ForcedNeutralFrames++; }
             }
 
             if (s_forceNeutralFrames[1] > 0) {
@@ -250,6 +281,7 @@ void MonitorAutoJump() {
         } else {
             bool grounded = isGrounded(2);
             bool landing = grounded && !s_wasGrounded[2];
+            if (landing && ValidationMetricsEnabled()) { GetValidationMetrics().p2LandingEdges++; }
             s_wasGrounded[2] = grounded;
             bool fwdRight = ForwardIsRightForPlayer(2);
             uint8_t wantMask = MOTION_INPUT_UP | (
@@ -261,6 +293,7 @@ void MonitorAutoJump() {
 
             if (landing) {
                 s_forceNeutralFrames[2] = 1;
+                if (ValidationMetricsEnabled()) { GetValidationMetrics().p2ForcedNeutralFrames++; }
             }
 
             if (s_forceNeutralFrames[2] > 0) {

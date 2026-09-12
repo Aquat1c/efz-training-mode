@@ -2,6 +2,7 @@
 #include <vector>
 #include <cstdint>
 #include "../core/constants.h"
+#include "../input/auto_action_motion_transaction.h"
 
 // Entry describing a character Final Memory (FM) input sequence.
 // pattern: unified GAME_INPUT_* byte masks in chronological order.
@@ -19,9 +20,15 @@ struct FinalMemoryCommand {
 // Builds (or returns cached) FM pattern list (excluding characters with none like Doppel).
 const std::vector<FinalMemoryCommand>& GetFinalMemoryCommands();
 
-// Attempt to execute a character's Final Memory by freezing the buffer with its pattern.
-// Returns true if pattern dispatched (character supported and pattern built).
-bool ExecuteFinalMemory(int playerNum, int characterId);
+// Attempt to execute a character's Final Memory. P2, and a P1 that is the
+// dummy (after a control swap), dispatch through the scoped native pattern
+// transaction, which humanizes an AI-flagged target for one producer pass; a
+// human P1 keeps the legacy freeze route. A wait larger than one is reserved
+// for wake/RG pre-buffer windows.
+bool ExecuteFinalMemory(int playerNum, int characterId,
+                        int consumerWaitPasses = 1,
+                        uint64_t* generationOut = nullptr,
+                        P2AutoActionMotionSubmitResult* submitResultOut = nullptr);
 
 // Utility to build a raw pattern from human friendly tokens.
 // Grammar extensions:

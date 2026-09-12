@@ -9,10 +9,10 @@
 #include "../include/core/logger.h"
 #include <windows.h>
 #include <atomic>
-#include <thread>
 #include <sstream>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 // For global shutdown flag
 #include "../include/core/globals.h"
 
@@ -54,19 +54,33 @@ bool SafeReadMemory(uintptr_t address, void* buffer, size_t size) {
 }
 
 uintptr_t ResolvePointer(uintptr_t base, uintptr_t baseOffset, uintptr_t offset) {
+    // First, prefer cached player bases when targeting EFZ player offsets. This avoids
+    // repeated SafeReadMemory calls during gameplay-critical loops.
+    if (baseOffset == EFZ_BASE_OFFSET_P1 || baseOffset == EFZ_BASE_OFFSET_P2) {
+        const int playerIndex = (baseOffset == EFZ_BASE_OFFSET_P1) ? 1 : 2;
+        uintptr_t playerBase = GetPlayerBase(playerIndex);
+        if (playerBase) {
+            uintptr_t finalAddr = playerBase + offset;
+            if (finalAddr >= 0x1000 && finalAddr <= 0xFFFFFFFF) {
+                return finalAddr;
+            }
+        }
+        // Fall through to legacy resolution if cache miss so existing behavior stays intact.
+    }
+
     if (base == 0) return 0;
-    
+
     uintptr_t ptrAddr = base + baseOffset;
     if (ptrAddr < 0x1000 || ptrAddr > 0xFFFFFFFF) return 0;
-    
+
     uintptr_t ptrValue = 0;
     if (!SafeReadMemory(ptrAddr, &ptrValue, sizeof(uintptr_t))) return 0;
-    
+
     if (ptrValue == 0 || ptrValue > 0xFFFFFFFF) return 0;
-    
+
     uintptr_t finalAddr = ptrValue + offset;
     if (finalAddr < 0x1000 || finalAddr > 0xFFFFFFFF) return 0;
-    
+
     return finalAddr;
 }
 
@@ -128,8 +142,14 @@ bool NopMemory(uintptr_t address, size_t length) {
     return true;
 }
 
-// Enhanced version of SetPlayerPosition with better Y-position handling
-void SetPlayerPosition(uintptr_t base, uintptr_t playerOffset, double x, double y, bool updateMoveID) {
+// Enhanced version of SetPlayerPosition with better Y-position handling.
+// Mission/tutorial setup uses the checked entry point so a failed teleport
+// cannot quietly become the baseline for the rest of a lesson.
+bool TrySetPlayerPosition(uintptr_t base, uintptr_t playerOffset, double x, double y, bool updateMoveID) {
+    if (!std::isfinite(x) || !std::isfinite(y)) {
+        LogOut("[MEMORY] Refused a non-finite fighter position", true);
+        return false;
+    }
     // Resolve position pointers
     uintptr_t xAddr = ResolvePointer(base, playerOffset, XPOS_OFFSET);
     uintptr_t yAddr = ResolvePointer(base, playerOffset, YPOS_OFFSET);
@@ -137,43 +157,112 @@ void SetPlayerPosition(uintptr_t base, uintptr_t playerOffset, double x, double 
     
     if (!xAddr || !yAddr) {
         LogOut("[MEMORY] Failed to resolve position pointers", true);
-        return;
+        return false;
     }
+    bool ok = true;
+
+    auto writeAndVerify = [&](uintptr_t address, const void* value, size_t size,
+                              const char* field) {
+        if (!address || !SafeWriteMemory(address, value, size)) {
+            LogOut(std::string("[MEMORY] Failed to write ") + field, true);
+            ok = false;
+            return;
+        }
+        unsigned char observed[sizeof(double)] = {};
+        if (size > sizeof(observed) ||
+            !SafeReadMemory(address, observed, size) ||
+            std::memcmp(observed, value, size) != 0) {
+            LogOut(std::string("[MEMORY] Failed to verify ") + field, true);
+            ok = false;
+        }
+    };
+    
+    // EFZ's world Y is zero on the floor and negative above it. Preserve that
+    // native sign when choosing the post-teleport state.
+    const bool willBeGrounded = y >= -0.5;
+    
+    // Reset animation frame counters for BOTH players to prevent stuck cloud state
+    // This is critical - if one player has cloud, both frame counters can get stuck
+    uintptr_t p1FrameAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P1, CURRENT_FRAME_INDEX_OFFSET);
+    uintptr_t p2FrameAddr = ResolvePointer(base, EFZ_BASE_OFFSET_P2, CURRENT_FRAME_INDEX_OFFSET);
+    short zeroFrame = 0;
+    if (p1FrameAddr) SafeWriteMemory(p1FrameAddr, &zeroFrame, sizeof(short));
+    if (p2FrameAddr) SafeWriteMemory(p2FrameAddr, &zeroFrame, sizeof(short));
     
     // Set X coordinate
-    if (!SafeWriteMemory(xAddr, &x, sizeof(double))) {
-        LogOut("[MEMORY] Failed to write X position", true);
-    }
+    writeAndVerify(xAddr, &x, sizeof(x), "X position");
     
     // Set Y coordinate
-    if (!SafeWriteMemory(yAddr, &y, sizeof(double))) {
-        LogOut("[MEMORY] Failed to write Y position", true);
+    writeAndVerify(yAddr, &y, sizeof(y), "Y position");
+    
+    // Reset X velocity to zero to prevent unintended movement
+    uintptr_t xVelAddr = ResolvePointer(base, playerOffset, XVEL_OFFSET);
+    if (xVelAddr) {
+        double zeroVel = 0.0;
+        writeAndVerify(xVelAddr, &zeroVel, sizeof(zeroVel), "X velocity");
+    } else {
+        LogOut("[MEMORY] Failed to resolve X velocity pointer", true);
+        ok = false;
     }
     
     // Reset Y velocity to zero to prevent unintended movement
     uintptr_t yVelAddr = ResolvePointer(base, playerOffset, YVEL_OFFSET);
     if (yVelAddr) {
         double zeroVel = 0.0;
-        SafeWriteMemory(yVelAddr, &zeroVel, sizeof(double));
+        writeAndVerify(yVelAddr, &zeroVel, sizeof(zeroVel), "Y velocity");
+    } else {
+        LogOut("[MEMORY] Failed to resolve Y velocity pointer", true);
+        ok = false;
+    }
+    
+    // Reset animation frame counter to prevent stuck animations
+    uintptr_t frameCounterAddr = ResolvePointer(base, playerOffset, CURRENT_FRAME_INDEX_OFFSET);
+    if (frameCounterAddr) {
+        short zeroFrame = 0;
+        writeAndVerify(frameCounterAddr, &zeroFrame, sizeof(zeroFrame), "animation frame");
+    } else {
+        LogOut("[MEMORY] Failed to resolve animation frame pointer", true);
+        ok = false;
     }
     
     // If requested, update moveID to reset the character state
     if (updateMoveID && moveIDAddr) {
-        short idleID = IDLE_MOVE_ID;
-        if (!SafeWriteMemory(moveIDAddr, &idleID, sizeof(short))) {
-            LogOut("[MEMORY] Failed to reset moveID", true);
+        short newMoveID;
+        
+        if (!willBeGrounded) {
+            // Teleporting to air position - set to falling state
+            newMoveID = FALLING_ID;
+        } else {
+            // Teleporting to ground - reset to idle
+            // The X and Y velocity resets above should prevent cloud issues
+            newMoveID = IDLE_MOVE_ID;
         }
+        
+        writeAndVerify(moveIDAddr, &newMoveID, sizeof(newMoveID), "move ID");
+    } else if (updateMoveID) {
+        LogOut("[MEMORY] Failed to resolve move ID pointer", true);
+        ok = false;
     }
     
     LogOut("[MEMORY] Set position - X: " + std::to_string(x) + ", Y: " + std::to_string(y), detailedLogging.load());
+    return ok;
 }
 
-// Direct RF value setter that matches Cheat Engine's approach
+void SetPlayerPosition(uintptr_t base, uintptr_t playerOffset, double x, double y,
+                       bool updateMoveID) {
+    (void)TrySetPlayerPosition(base, playerOffset, x, y, updateMoveID);
+}
+
+
+// Direct RF value setter (pointer-based)
 bool SetRFValuesDirect(double p1RF, double p2RF) {
+    // CRITICAL: Never modify game state during online mode
+    if (g_onlineModeActive.load()) return false;
+
     uintptr_t base = GetEFZBase();
     if (!base) return false;
     
-    // Use direct pointer access exactly as Cheat Engine does
+    // Use direct pointer access
     uintptr_t* p1Ptr = (uintptr_t*)(base + EFZ_BASE_OFFSET_P1);
     uintptr_t* p2Ptr = (uintptr_t*)(base + EFZ_BASE_OFFSET_P2);
     
@@ -245,12 +334,231 @@ bool SetRFValuesDirect(double p1RF, double p2RF) {
     return success;
 }
 
+// Read per-player copies of engine regen params (Param A/B). We read from P1 base only since
+// both players are kept in sync by the engine handler; fallback tries P2 if P1 fails.
+bool ReadEngineRegenParams(uint16_t& outParamA, uint16_t& outParamB) {
+    outParamA = 0; outParamB = 0;
+    uintptr_t base = GetEFZBase(); if (!base) return false;
+    uintptr_t p1PtrAddr = base + EFZ_BASE_OFFSET_P1;
+    uintptr_t p2PtrAddr = base + EFZ_BASE_OFFSET_P2;
+    uintptr_t p1Base = 0, p2Base = 0;
+    if (!SafeReadMemory(p1PtrAddr, &p1Base, sizeof(p1Base)) || !p1Base) {
+        SafeReadMemory(p2PtrAddr, &p2Base, sizeof(p2Base));
+    }
+    uintptr_t useBase = p1Base ? p1Base : p2Base;
+    if (!useBase) return false;
+    uint16_t a=0,b=0;
+    if (!SafeReadMemory(useBase + PLAYER_PARAM_A_COPY_OFFSET, &a, sizeof(a))) return false;
+    if (!SafeReadMemory(useBase + PLAYER_PARAM_B_COPY_OFFSET, &b, sizeof(b))) return false;
+    outParamA = a; outParamB = b; return true;
+}
+
+// Write per-player copies of engine regen params (Param A/B) to both players.
+// Returns true if at least one player's params were written.
+bool WriteEngineRegenParams(uint16_t paramA, uint16_t paramB) {
+    uintptr_t base = GetEFZBase(); if (!base) return false;
+    uintptr_t p1PtrAddr = base + EFZ_BASE_OFFSET_P1;
+    uintptr_t p2PtrAddr = base + EFZ_BASE_OFFSET_P2;
+    uintptr_t p1Base = 0, p2Base = 0; bool any = false;
+    SafeReadMemory(p1PtrAddr, &p1Base, sizeof(p1Base));
+    SafeReadMemory(p2PtrAddr, &p2Base, sizeof(p2Base));
+    if (p1Base) {
+        any |= SafeWriteMemory(p1Base + PLAYER_PARAM_A_COPY_OFFSET, &paramA, sizeof(paramA));
+        any |= SafeWriteMemory(p1Base + PLAYER_PARAM_B_COPY_OFFSET, &paramB, sizeof(paramB));
+    }
+    if (p2Base) {
+        any |= SafeWriteMemory(p2Base + PLAYER_PARAM_A_COPY_OFFSET, &paramA, sizeof(paramA));
+        any |= SafeWriteMemory(p2Base + PLAYER_PARAM_B_COPY_OFFSET, &paramB, sizeof(paramB));
+    }
+    if (any) {
+        LogOut("[ENGINE][Regen] Wrote Param A/B: A=" + std::to_string((unsigned)paramA) + ", B=" + std::to_string((unsigned)paramB), detailedLogging.load());
+    }
+    return any;
+}
+
+// Force F5 preset: A=1000 or 2000, B=3332. Returns true if writes succeed.
+bool ForceEngineF5Preset(uint16_t presetA) {
+    if (presetA != 1000 && presetA != 2000) presetA = 1000;
+    uint16_t b = 3332;
+    bool ok = WriteEngineRegenParams(presetA, b);
+    // Kick our detection cooldown implicitly next frame; GetEngineRegenStatus will see A/B and mark F5
+    return ok;
+}
+
+// Force F5 "Full values": set HP to 9999 on both players and set params to a coherent F5-looking state.
+// We set A=1000 (so F5 is detected) and B=9999 (observed after A==2000 branch in engine); cadence is absent so not treated as F4.
+bool ForceEngineF5Full() {
+    uintptr_t base = GetEFZBase(); if (!base) return false;
+    uintptr_t p1Base = 0, p2Base = 0; bool any=false;
+    SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1Base, sizeof(p1Base));
+    SafeReadMemory(base + EFZ_BASE_OFFSET_P2, &p2Base, sizeof(p2Base));
+    int hpFull = 9999;
+    if (p1Base) {
+        any |= SafeWriteMemory(p1Base + HP_OFFSET, &hpFull, sizeof(hpFull));
+        any |= SafeWriteMemory(p1Base + HP_BAR_OFFSET, &hpFull, sizeof(hpFull));
+    }
+    if (p2Base) {
+        any |= SafeWriteMemory(p2Base + HP_OFFSET, &hpFull, sizeof(hpFull));
+        any |= SafeWriteMemory(p2Base + HP_BAR_OFFSET, &hpFull, sizeof(hpFull));
+    }
+    // Mark params so our UI detects F5 and shows full state
+    WriteEngineRegenParams(1000, 9999);
+    LogOut("[ENGINE][Regen] Forced F5 Full: HP=9999, Params A=1000 B=9999", detailedLogging.load());
+    return any;
+}
+
+// Force F4 value: clamp to [0..2000], round to nearest multiple of 5, set B=9999.
+// Single write should produce a +5 cadence delta on next poll relative to previous A, engaging F4 heuristic.
+bool ForceEngineF4Value(uint16_t targetA) {
+    if (targetA > 2000) targetA = 2000;
+    // round to nearest multiple of 5 for authenticity
+    targetA = (uint16_t)((targetA + 2) / 5 * 5);
+    if (targetA > 2000) targetA = 2000;
+    uint16_t b = 9999;
+    bool ok = WriteEngineRegenParams(targetA, b);
+    return ok;
+}
+
+EngineRegenMode InferEngineRegenMode(uint16_t paramA, uint16_t paramB) {
+    // F5 cycle sets A to 1000 or 2000 AND (at some point) B to 3332; it leaves B=3332 afterwards.
+    bool f5Pattern = (paramA == 1000 || paramA == 2000 || paramB == 3332);
+    // F4 fine-tune forces B=9999 while A steps 0..2000 by +5; A will often be multiples of 5.
+    bool fineTunePattern = (paramB == 9999 && (paramA % 5 == 0) && paramA != 1000 && paramA != 2000);
+    if (fineTunePattern) return EngineRegenMode::F4_FineTuneActive;
+    if (f5Pattern) return EngineRegenMode::F5_FullOrPreset;
+    return EngineRegenMode::Normal;
+}
+
+bool IsEngineRegenLikelyActive() {
+    uint16_t a=0,b=0; if (!ReadEngineRegenParams(a,b)) return false;
+    EngineRegenMode m = InferEngineRegenMode(a,b);
+    return m == EngineRegenMode::F4_FineTuneActive || m == EngineRegenMode::F5_FullOrPreset;
+}
+
+// Stateful inference to avoid false positives:
+// - Treat F5 as active when A==1000/2000 or B==3332; start a cooldown (s_f4Cooldown) suppressing F4 detection for N frames
+// - Treat F4 only when B==9999 AND A is stepping by +5 with wrap for several consecutive frames (s_stepRun>=3)
+// - Do NOT treat static B==9999 as F4 (HP max is common)
+static uint16_t s_prevA = 0;
+static uint16_t s_prevB = 0;
+static int s_stepRun = 0;
+static int s_f4Cooldown = 0;
+static bool s_prevValid = false;
+
+bool GetEngineRegenStatus(EngineRegenMode& outMode, uint16_t& outParamA, uint16_t& outParamB) {
+    outMode = EngineRegenMode::Unknown; outParamA = outParamB = 0;
+    uint16_t a=0,b=0; if (!ReadEngineRegenParams(a,b)) return false;
+    outParamA = a; outParamB = b;
+
+    // F5 check first
+    bool f5 = (a == 1000 || a == 2000 || b == 3332);
+    if (f5) {
+        outMode = EngineRegenMode::F5_FullOrPreset;
+        s_f4Cooldown = 30; // ~0.5s at 60fps; tune if needed
+        // reset F4 cadence tracker when F5 toggles
+        s_stepRun = 0; s_prevValid = true; s_prevA = a; s_prevB = b; return true;
+    }
+
+    // Cooldown suppresses F4 after F5 activity
+    if (s_f4Cooldown > 0) {
+        s_f4Cooldown--; outMode = EngineRegenMode::Normal; s_prevValid = true; s_prevA = a; s_prevB = b; return true;
+    }
+
+    // F4 cadence: B==9999 AND A stepping forward in multiples of 5 (account for sampling gaps and wrap 2000->0)
+    if (b == 9999 && s_prevValid) {
+        int delta = (int)a - (int)s_prevA;
+        bool forwardMulti5 = (delta > 0 && (delta % 5) == 0);
+        bool wrappedForward = (s_prevA > a) && (((2000 - s_prevA) + a) % 5 == 0);
+        if (forwardMulti5 || wrappedForward || (s_prevA == 2000 && a == 0)) {
+            if (s_stepRun < 10) s_stepRun++;
+        } else if (a != s_prevA) {
+            // Different but not consistent with +5 cadence: reset
+            s_stepRun = 0;
+        }
+    } else {
+        s_stepRun = 0;
+    }
+
+    if (b == 9999 && s_stepRun >= 1) {
+        outMode = EngineRegenMode::F4_FineTuneActive;
+    } else {
+        outMode = EngineRegenMode::Normal;
+    }
+
+    s_prevValid = true; s_prevA = a; s_prevB = b; return true;
+}
+
+// Derive RF gauge value and IC color from Param A mapping described by user:
+// Param A 0..999.99  -> red gauge, RF = A (clamped 0..1000)
+// Param A == 1000    -> blue gauge full (RF = 1000)
+// Param A 1001..2000 -> blue gauge with RF = 2000 - A (so A=1980 -> RF=20)
+// Returns true if mapping applied; outputs rfValue (float) and isBlueIC.
+bool DeriveRfFromParamA(uint16_t paramA, float& rfValue, bool& isBlueIC) {
+    // Accept 16-bit integer paramA; fractional .99 context ignored (engine stores word).
+    if (paramA <= 1000) {
+        if (paramA < 1000) {
+            isBlueIC = false; rfValue = (float)paramA; return true;
+        } else { // exactly 1000
+            isBlueIC = true; rfValue = 1000.0f; return true;
+        }
+    }
+    if (paramA <= 2000) {
+        isBlueIC = true; rfValue = (float)(2000 - paramA); if (rfValue < 0.0f) rfValue = 0.0f; return true;
+    }
+    // Outside expected range; treat as unknown
+    isBlueIC = false; rfValue = 0.0f; return false;
+}
+
+// Brute-force scan a small window around the expected offsets to find a plausible Param A/B pair.
+// This helps when observed values appear incorrect (e.g., 0xFFFF / static) to confirm actual locations.
+// Strategy:
+//   Scan words in [0x30C0 .. 0x3120]; look for patterns:
+//     - B candidates: 9999 (F4), 3332 (F5 cycle) -> preceding 2 bytes likely A.
+//     - A candidates: 1000 or 2000 with following 2 bytes in {3332, 9999, <=2100 stepping}.
+// Returns first strong candidate; offsets are relative to playerBase.
+bool DebugScanRegenParamWindow(uintptr_t playerBase, uint32_t& outAOffset, uint16_t& outAVal, uint32_t& outBOffset, uint16_t& outBVal) {
+    outAOffset = outBOffset = 0; outAVal = outBVal = 0;
+    if (!playerBase) return false;
+    const uint32_t START = 0x30C0; const uint32_t END = 0x3120; // conservative window
+    uint16_t prevVal = 0;
+    for (uint32_t off = START; off <= END; off += 2) {
+        uint16_t val = 0; SafeReadMemory(playerBase + off, &val, sizeof(val));
+        // B candidate first (strong identifiers)
+        if (val == 9999 || val == 3332) {
+            // Read preceding word as A
+            if (off >= 2) {
+                uint16_t aVal = 0; SafeReadMemory(playerBase + off - 2, &aVal, sizeof(aVal));
+                if ((aVal <= 2100) || aVal == 1000 || aVal == 2000) {
+                    outAOffset = off - 2; outAVal = aVal; outBOffset = off; outBVal = val; return true;
+                }
+            }
+        }
+        // A candidate pattern
+        if (val == 1000 || val == 2000) {
+            uint16_t bVal = 0; SafeReadMemory(playerBase + off + 2, &bVal, sizeof(bVal));
+            if (bVal == 3332 || bVal == 9999 || bVal <= 2100) {
+                outAOffset = off; outAVal = val; outBOffset = off + 2; outBVal = bVal; return true;
+            }
+        }
+        // F4 stepping heuristic: multiples of 5 rising towards 2000 while neighbor is 9999
+        if ((val % 5) == 0 && val <= 2000) {
+            uint16_t bVal = 0; SafeReadMemory(playerBase + off + 2, &bVal, sizeof(bVal));
+            if (bVal == 9999) { outAOffset = off; outAVal = val; outBOffset = off + 2; outBVal = bVal; return true; }
+        }
+        prevVal = val;
+    }
+    return false;
+}
+
 // Set IC Color values directly (similar to SetRFValuesDirect)
 bool SetICColorDirect(bool p1BlueIC, bool p2BlueIC) {
+    // CRITICAL: Never modify game state during online mode
+    if (g_onlineModeActive.load()) return false;
+
     uintptr_t base = GetEFZBase();
     if (!base) return false;
     
-    // Use direct pointer access exactly as Cheat Engine does
+    // Use direct pointer access
     uintptr_t* p1Ptr = (uintptr_t*)(base + EFZ_BASE_OFFSET_P1);
     uintptr_t* p2Ptr = (uintptr_t*)(base + EFZ_BASE_OFFSET_P2);
     
@@ -282,12 +590,17 @@ bool SetICColorDirect(bool p1BlueIC, bool p2BlueIC) {
     // Convert bool to int (0=red IC, 1=blue IC)
     int p1ICValue = p1BlueIC ? 1 : 0;
     int p2ICValue = p2BlueIC ? 1 : 0;
-    
+
+    // LOG: Track IC color writes for debugging
+    std::ostringstream logMsg;
+    logMsg << "[IC][WRITE] SetICColorDirect called: P1=" << (p1BlueIC ? "Blue" : "Red")
+           << " P2=" << (p2BlueIC ? "Blue" : "Red")
+           << " (values: P1=" << p1ICValue << ", P2=" << p2ICValue << ")";
+    LogOut(logMsg.str(), true);
+
     // Write values with memory protection handling
     DWORD oldProtect1, oldProtect2;
-    bool success = true;
-    
-    // P1 IC color write
+    bool success = true;    // P1 IC color write
     if (VirtualProtect(p1ICAddr, sizeof(int), PAGE_EXECUTE_READWRITE, &oldProtect1)) {
         *p1ICAddr = p1ICValue;
         VirtualProtect(p1ICAddr, sizeof(int), oldProtect1, &oldProtect1);
@@ -340,6 +653,15 @@ bool SetICColorPlayer(int player, bool blueIC) {
 
     bool p1Blue = (p1IC != 0);
     bool p2Blue = (p2IC != 0);
+    
+    // LOG: Track which player's IC is being changed
+    std::ostringstream logMsg;
+    logMsg << "[IC][WRITE] SetICColorPlayer called: Player=" << player
+           << " NewColor=" << (blueIC ? "Blue" : "Red")
+           << " CurrentState(P1=" << (p1Blue ? "Blue" : "Red")
+           << ", P2=" << (p2Blue ? "Blue" : "Red") << ")";
+    LogOut(logMsg.str(), true);
+    
     if (player == 1) {
         p1Blue = blueIC;
     } else if (player == 2) {
@@ -365,7 +687,11 @@ void UpdatePlayerValues(uintptr_t base, uintptr_t baseOffsetP1, uintptr_t baseOf
     uintptr_t xAddr2 = ResolvePointer(base, baseOffsetP2, XPOS_OFFSET);
     uintptr_t yAddr2 = ResolvePointer(base, baseOffsetP2, YPOS_OFFSET);
 
-    if (hpAddr1) WriteGameMemory(hpAddr1, &displayData.hp1, sizeof(WORD));
+    if (hpAddr1) {
+        WriteGameMemory(hpAddr1, &displayData.hp1, sizeof(int));
+        uintptr_t hpBar1 = ResolvePointer(base, baseOffsetP1, HP_BAR_OFFSET);
+        if (hpBar1) WriteGameMemory(hpBar1, &displayData.hp1, sizeof(int));
+    }
     if (meterAddr1) WriteGameMemory(meterAddr1, &displayData.meter1, sizeof(WORD));
     
     // CRITICAL FIX: Write RF as float (4 bytes), not double (8 bytes)
@@ -377,7 +703,11 @@ void UpdatePlayerValues(uintptr_t base, uintptr_t baseOffsetP1, uintptr_t baseOf
     if (xAddr1) WriteGameMemory(xAddr1, &displayData.x1, sizeof(double));
     if (yAddr1) WriteGameMemory(yAddr1, &displayData.y1, sizeof(double));
 
-    if (hpAddr2) WriteGameMemory(hpAddr2, &displayData.hp2, sizeof(WORD));
+    if (hpAddr2) {
+        WriteGameMemory(hpAddr2, &displayData.hp2, sizeof(int));
+        uintptr_t hpBar2 = ResolvePointer(base, baseOffsetP2, HP_BAR_OFFSET);
+        if (hpBar2) WriteGameMemory(hpBar2, &displayData.hp2, sizeof(int));
+    }
     if (meterAddr2) WriteGameMemory(meterAddr2, &displayData.meter2, sizeof(WORD));
     
     // CRITICAL FIX: Write RF as float (4 bytes), not double (8 bytes)
@@ -462,7 +792,6 @@ void LoadPlayerPositions(uintptr_t base) {
     }
 }
 
-// Add this function implementation at the end of the file
 uint8_t GetPlayerInputs(int playerNum) {
     uintptr_t base = GetEFZBase();
     if (!base) return 0;
@@ -497,7 +826,6 @@ bool GetPlayerFacingDirection(int playerNum) {
     return facingValue == 1;
 }
 
-// Add this function that updates all values except RF
 void UpdatePlayerValuesExceptRF(uintptr_t base, uintptr_t baseOffsetP1, uintptr_t baseOffsetP2) {
     // Write values from displayData to game memory
     uintptr_t hpAddr1 = ResolvePointer(base, baseOffsetP1, HP_OFFSET);
@@ -510,12 +838,20 @@ void UpdatePlayerValuesExceptRF(uintptr_t base, uintptr_t baseOffsetP1, uintptr_
     uintptr_t xAddr2 = ResolvePointer(base, baseOffsetP2, XPOS_OFFSET);
     uintptr_t yAddr2 = ResolvePointer(base, baseOffsetP2, YPOS_OFFSET);
 
-    if (hpAddr1) WriteGameMemory(hpAddr1, &displayData.hp1, sizeof(WORD));
+    if (hpAddr1) {
+        WriteGameMemory(hpAddr1, &displayData.hp1, sizeof(int));
+        uintptr_t hpBar1 = ResolvePointer(base, baseOffsetP1, HP_BAR_OFFSET);
+        if (hpBar1) WriteGameMemory(hpBar1, &displayData.hp1, sizeof(int));
+    }
     if (meterAddr1) WriteGameMemory(meterAddr1, &displayData.meter1, sizeof(WORD));
     if (xAddr1) WriteGameMemory(xAddr1, &displayData.x1, sizeof(double));
     if (yAddr1) WriteGameMemory(yAddr1, &displayData.y1, sizeof(double));
 
-    if (hpAddr2) WriteGameMemory(hpAddr2, &displayData.hp2, sizeof(WORD));
+    if (hpAddr2) {
+        WriteGameMemory(hpAddr2, &displayData.hp2, sizeof(int));
+        uintptr_t hpBar2 = ResolvePointer(base, baseOffsetP2, HP_BAR_OFFSET);
+        if (hpBar2) WriteGameMemory(hpBar2, &displayData.hp2, sizeof(int));
+    }
     if (meterAddr2) WriteGameMemory(meterAddr2, &displayData.meter2, sizeof(WORD));
     if (xAddr2) WriteGameMemory(xAddr2, &displayData.x2, sizeof(double));
     if (yAddr2) WriteGameMemory(yAddr2, &displayData.y2, sizeof(double));
@@ -527,105 +863,14 @@ std::atomic<bool> rfFreezeP1Active(false);
 std::atomic<bool> rfFreezeP2Active(false);
 std::atomic<double> rfFreezeValueP1(0.0);
 std::atomic<double> rfFreezeValueP2(0.0);
-std::thread rfFreezeThread;
-bool rfThreadRunning = false;
+// Track provenance of RF freeze per-player
+static std::atomic<int> rfFreezeOriginP1{ (int)RFFreezeOrigin::None };
+static std::atomic<int> rfFreezeOriginP2{ (int)RFFreezeOrigin::None };
 // Desired RF-freeze IC color lock settings (optional)
 static bool rfFreezeColorP1Enabled = false;
 static bool rfFreezeColorP1Blue = false;
 static bool rfFreezeColorP2Enabled = false;
 static bool rfFreezeColorP2Blue = false;
-
-// Improved RF freeze thread function with better error handling
-void RFFreezeThreadFunc() {
-    rfThreadRunning = true;
-    int sleepMs = 10;                // default ~100 Hz when active
-    const int minSleepMs = 5;        // lower bound when values are drifting
-    const int maxSleepMs = 40;       // back off to ~25 Hz when stable
-    int stableIters = 0;
-    auto nearlyEqual = [](double a, double b) {
-        return fabs(a - b) < 1e-6;   // tiny tolerance for float write verification
-    };
-    
-    while (rfThreadRunning && !g_isShuttingDown.load()) {
-        if (rfFreezing.load()) {
-            uintptr_t base = GetEFZBase();
-            if (base) {
-                // Use direct pointer access exactly as Cheat Engine does
-                uintptr_t* p1Ptr = (uintptr_t*)(base + EFZ_BASE_OFFSET_P1);
-                uintptr_t* p2Ptr = (uintptr_t*)(base + EFZ_BASE_OFFSET_P2);
-                
-                // Validate pointers are readable using IsBadReadPtr
-                if (!IsBadReadPtr(p1Ptr, sizeof(uintptr_t)) && !IsBadReadPtr(p2Ptr, sizeof(uintptr_t))) {
-                    // Follow the pointers to get player structures
-                    uintptr_t p1Base = *p1Ptr;
-                    uintptr_t p2Base = *p2Ptr;
-                    
-                    if (p1Base && p2Base) {
-                        // Calculate RF addresses
-                        double* p1RFAddr = (double*)(p1Base + RF_OFFSET);
-                        double* p2RFAddr = (double*)(p2Base + RF_OFFSET);
-                        
-                        // Validate these addresses using IsBadWritePtr
-                        if (!IsBadWritePtr(p1RFAddr, sizeof(double)) && !IsBadWritePtr(p2RFAddr, sizeof(double))) {
-                            // Only write if value changed to avoid constant page flips
-                            double targetP1 = rfFreezeValueP1.load();
-                            double targetP2 = rfFreezeValueP2.load();
-                            double curP1 = *p1RFAddr;
-                            double curP2 = *p2RFAddr;
-                            bool wrote = false;
-
-                            if (rfFreezeP1Active.load() && !nearlyEqual(curP1, targetP1)) {
-                                DWORD oldProtect1;
-                                if (VirtualProtect(p1RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &oldProtect1)) {
-                                    *p1RFAddr = targetP1;
-                                    VirtualProtect(p1RFAddr, sizeof(double), oldProtect1, &oldProtect1);
-                                    wrote = true;
-                                }
-                            }
-                            if (rfFreezeP2Active.load() && !nearlyEqual(curP2, targetP2)) {
-                                DWORD oldProtect2;
-                                if (VirtualProtect(p2RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &oldProtect2)) {
-                                    *p2RFAddr = targetP2;
-                                    VirtualProtect(p2RFAddr, sizeof(double), oldProtect2, &oldProtect2);
-                                    wrote = true;
-                                }
-                            }
-
-                            // Adjust backoff
-                if (wrote) {
-                                sleepMs = minSleepMs;
-                                stableIters = 0;
-                            } else {
-                                stableIters++;
-                                if (stableIters > 3) {
-                    sleepMs = (std::min)(sleepMs * 2, maxSleepMs);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        else {
-            // When not freezing, back off considerably and avoid memory touching
-            sleepMs = maxSleepMs;
-        }
-        
-        Sleep(sleepMs);
-    }
-}
-
-// Initialize the RF freeze thread
-void InitRFFreezeThread() {
-    if (rfThreadRunning) return;
-    
-    rfThreadRunning = true;
-    rfFreezeThread = std::thread(RFFreezeThreadFunc);
-    rfFreezeThread.detach();
-    
-    // Only show in detailed mode
-    LogOut("[RF] RF freeze thread initialized", detailedLogging.load());
-}
 
 // Start freezing RF values
 void StartRFFreeze(double p1Value, double p2Value) {
@@ -645,9 +890,16 @@ void StartRFFreeze(double p1Value, double p2Value) {
 // Start freezing for one player only
 void StartRFFreezeOne(int player, double value) {
     if (player == 1) {
+        // Deduplicate: if already active with same value, do nothing
+        if (rfFreezeP1Active.load() && rfFreezeValueP1.load() == value) {
+            return;
+        }
         rfFreezeValueP1.store(value);
         rfFreezeP1Active.store(true);
     } else if (player == 2) {
+        if (rfFreezeP2Active.load() && rfFreezeValueP2.load() == value) {
+            return;
+        }
         rfFreezeValueP2.store(value);
         rfFreezeP2Active.store(true);
     } else {
@@ -670,8 +922,11 @@ void StopRFFreeze() {
 void StopRFFreezePlayer(int player) {
     if (player == 1) {
         rfFreezeP1Active.store(false);
+        // Clear origin when side becomes inactive
+        rfFreezeOriginP1.store((int)RFFreezeOrigin::None);
     } else if (player == 2) {
         rfFreezeP2Active.store(false);
+        rfFreezeOriginP2.store((int)RFFreezeOrigin::None);
     } else {
         return;
     }
@@ -680,14 +935,6 @@ void StopRFFreezePlayer(int player) {
         rfFreezing.store(false);
     }
     LogOut(std::string("[RF] Stopped RF freeze for P") + (player==1?"1":"2"), detailedLogging.load());
-}
-
-// Stop the RF freeze background thread entirely
-void StopRFFreezeThread() {
-    if (rfThreadRunning) {
-        rfThreadRunning = false;
-        LogOut("[RF] RF freeze thread signaled to stop", detailedLogging.load());
-    }
 }
 
 // Allow external modules to toggle neutral-only RF freeze behavior
@@ -709,34 +956,172 @@ void UpdateRFFreezeTick() {
     if (!p1Base || !p2Base) return;
     double* p1RFAddr = (double*)(p1Base + RF_OFFSET);
     double* p2RFAddr = (double*)(p2Base + RF_OFFSET);
-    // Optional neutral-only gating
-    bool neutralOnly = Config::GetSettings().freezeRFOnlyWhenNeutral;
+    // Optional neutral-only gating (own neutral) and optional both-neutral coupling to CR setting
+    auto cfg = Config::GetSettings();
+    bool neutralOnly = cfg.freezeRFOnlyWhenNeutral;
+    bool requireBothNeutral = cfg.crRequireBothNeutral; // when enabled, require BOTH sides neutral for RF freeze writes
+    int bothNeutralDelayMs = (cfg.crBothNeutralDelayMs < 0 ? 0 : cfg.crBothNeutralDelayMs);
     auto isAllowedNeutral = [](short m){ return (m==0 || m==1 || m==2 || m==3 || m==4 || m==7 || m==8 || m==9 || m==13); };
     short m1=0, m2=0;
-    if (neutralOnly) {
+    // Always read move IDs so we can log why freeze applies or skips
+    {
         short t1=0, t2=0;
         SafeReadMemory(p1Base + MOVE_ID_OFFSET, &t1, sizeof(t1));
         SafeReadMemory(p2Base + MOVE_ID_OFFSET, &t2, sizeof(t2));
         m1 = t1; m2 = t2;
     }
-    __try {
-        DWORD old1=0, old2=0;
-        double t1 = rfFreezeValueP1.load();
-        double t2 = rfFreezeValueP2.load();
-        bool canP1 = rfFreezeP1Active.load() && (!neutralOnly || isAllowedNeutral(m1));
-        bool canP2 = rfFreezeP2Active.load() && (!neutralOnly || isAllowedNeutral(m2));
-        if (canP1 && p1RFAddr && VirtualProtect(p1RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &old1)) { *p1RFAddr = t1; VirtualProtect(p1RFAddr, sizeof(double), old1, &old1); }
-        if (canP2 && p2RFAddr && VirtualProtect(p2RFAddr, sizeof(double), PAGE_EXECUTE_READWRITE, &old2)) { *p2RFAddr = t2; VirtualProtect(p2RFAddr, sizeof(double), old2, &old2); }
-        // Optional: enforce IC color while RF is frozen (per-player)
-        if (rfFreezeP1Active.load() && rfFreezeColorP1Enabled) {
-            SetICColorPlayer(1, rfFreezeColorP1Blue);
+    // Track outcomes for logging outside SEH block
+    bool didWriteP1 = false, didWriteP2 = false;
+    double prevP1 = 0.0, newP1 = 0.0, prevP2 = 0.0, newP2 = 0.0;
+    bool p1SkipNonNeutral = false, p2SkipNonNeutral = false;
+
+    // Use SafeRead/Write to avoid SEH requirements
+    double t1 = rfFreezeValueP1.load();
+    double t2 = rfFreezeValueP2.load();
+    bool p1Active = rfFreezeP1Active.load();
+    bool p2Active = rfFreezeP2Active.load();
+    bool p1Allowed = isAllowedNeutral(m1);
+    bool p2Allowed = isAllowedNeutral(m2);
+    bool bothAllowed = p1Allowed && p2Allowed;
+    // Track both-neutral stability for delay (local to RF freeze)
+    static bool s_prevBothNeutralRF = false;
+    static unsigned long long s_bothNeutralStartRFMs = 0ULL;
+    unsigned long long nowMs = (unsigned long long)std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (neutralOnly && requireBothNeutral) {
+        if (bothAllowed) {
+            if (!s_prevBothNeutralRF) {
+                s_bothNeutralStartRFMs = nowMs;
+            }
+        } else {
+            s_bothNeutralStartRFMs = 0ULL;
         }
-        if (rfFreezeP2Active.load() && rfFreezeColorP2Enabled) {
-            SetICColorPlayer(2, rfFreezeColorP2Blue);
-        }
-    } __except(EXCEPTION_EXECUTE_HANDLER) {
-        // Ignore access faults; tick is best-effort
+        s_prevBothNeutralRF = bothAllowed;
+    } else {
+        s_prevBothNeutralRF = false;
+        s_bothNeutralStartRFMs = 0ULL;
     }
+    unsigned long long bothElapsedMs = (s_bothNeutralStartRFMs == 0ULL) ? 0ULL : (nowMs - s_bothNeutralStartRFMs);
+    bool bothAllowedWithDelay = bothAllowed && (!neutralOnly || !requireBothNeutral || (bothElapsedMs >= (unsigned long long)bothNeutralDelayMs));
+    // If neutralOnly is enabled and CR requires both-neutral, then RF freeze honors both sides neutrality AND delay.
+    // Otherwise, it honors only the target side's neutrality.
+    bool canP1 = p1Active && (!neutralOnly || (requireBothNeutral ? bothAllowedWithDelay : p1Allowed));
+    bool canP2 = p2Active && (!neutralOnly || (requireBothNeutral ? bothAllowedWithDelay : p2Allowed));
+    // Only write when value differs
+    if (canP1 && p1RFAddr) {
+        double cur1 = 0.0;
+        if (SafeReadMemory((uintptr_t)p1RFAddr, &cur1, sizeof(cur1)) && cur1 != t1) {
+            if (SafeWriteMemory((uintptr_t)p1RFAddr, &t1, sizeof(t1))) {
+                didWriteP1 = true; prevP1 = cur1; newP1 = t1;
+            }
+        }
+    }
+    if (canP2 && p2RFAddr) {
+        double cur2 = 0.0;
+        if (SafeReadMemory((uintptr_t)p2RFAddr, &cur2, sizeof(cur2)) && cur2 != t2) {
+            if (SafeWriteMemory((uintptr_t)p2RFAddr, &t2, sizeof(t2))) {
+                didWriteP2 = true; prevP2 = cur2; newP2 = t2;
+            }
+        }
+    }
+    bool p1SkipDelay = false, p2SkipDelay = false;
+    if (p1Active && !canP1 && neutralOnly) {
+        if (requireBothNeutral && bothAllowed && (bothElapsedMs < (unsigned long long)bothNeutralDelayMs)) {
+            p1SkipDelay = true;
+        } else {
+            p1SkipNonNeutral = true;
+        }
+    }
+    if (p2Active && !canP2 && neutralOnly) {
+        if (requireBothNeutral && bothAllowed && (bothElapsedMs < (unsigned long long)bothNeutralDelayMs)) {
+            p2SkipDelay = true;
+        } else {
+            p2SkipNonNeutral = true;
+        }
+    }
+    // Optional: enforce IC color while RF is frozen (per-player)
+    static bool s_lastP1Color = false;
+    static bool s_lastP1ColorEnabled = false;
+    static bool s_lastP2Color = false;
+    static bool s_lastP2ColorEnabled = false;
+    if (rfFreezeP1Active.load() && rfFreezeColorP1Enabled) {
+        if (!s_lastP1ColorEnabled || s_lastP1Color != rfFreezeColorP1Blue) {
+            std::ostringstream logMsg;
+            logMsg << "[IC][RF_FREEZE] P1 IC color enforced by RF freeze: "
+                   << (rfFreezeColorP1Blue ? "Blue" : "Red")
+                   << " (was " << (s_lastP1ColorEnabled ? (s_lastP1Color ? "Blue" : "Red") : "unmanaged") << ")";
+            LogOut(logMsg.str(), true);
+            SetICColorPlayer(1, rfFreezeColorP1Blue);
+            s_lastP1ColorEnabled = true; s_lastP1Color = rfFreezeColorP1Blue;
+        }
+    } else {
+        s_lastP1ColorEnabled = false; // allow re-apply next time it enables
+    }
+    if (rfFreezeP2Active.load() && rfFreezeColorP2Enabled) {
+        if (!s_lastP2ColorEnabled || s_lastP2Color != rfFreezeColorP2Blue) {
+            std::ostringstream logMsg;
+            logMsg << "[IC][RF_FREEZE] P2 IC color enforced by RF freeze: "
+                   << (rfFreezeColorP2Blue ? "Blue" : "Red")
+                   << " (was " << (s_lastP2ColorEnabled ? (s_lastP2Color ? "Blue" : "Red") : "unmanaged") << ")";
+            LogOut(logMsg.str(), true);
+            SetICColorPlayer(2, rfFreezeColorP2Blue);
+            s_lastP2ColorEnabled = true; s_lastP2Color = rfFreezeColorP2Blue;
+        }
+    } else {
+        s_lastP2ColorEnabled = false;
+    }
+
+    // Log outside SEH for safety
+    #if defined(ENABLE_FRAME_ADV_DEBUG)
+    if (true) {
+        if (didWriteP1) {
+            char buf[256];
+            snprintf(buf, sizeof(buf), "[RF][Freeze] P1 write %.1f->%.1f moveID=%d allowedNeutral=%s neutralOnly=%s bothNeutralGate=%s delayMs=%d elapsedMs=%llu oppMoveID=%d oppAllowed=%s",
+                     prevP1, newP1, (int)m1, (isAllowedNeutral(m1)?"true":"false"), (neutralOnly?"true":"false"),
+                     (requireBothNeutral?"true":"false"), bothNeutralDelayMs, (unsigned long long)bothElapsedMs, (int)m2, (isAllowedNeutral(m2)?"true":"false"));
+            LogOut(buf, true);
+        }
+        if (didWriteP2) {
+            char buf[256];
+            snprintf(buf, sizeof(buf), "[RF][Freeze] P2 write %.1f->%.1f moveID=%d allowedNeutral=%s neutralOnly=%s bothNeutralGate=%s delayMs=%d elapsedMs=%llu oppMoveID=%d oppAllowed=%s",
+                     prevP2, newP2, (int)m2, (isAllowedNeutral(m2)?"true":"false"), (neutralOnly?"true":"false"),
+                     (requireBothNeutral?"true":"false"), bothNeutralDelayMs, (unsigned long long)bothElapsedMs, (int)m1, (isAllowedNeutral(m1)?"true":"false"));
+            LogOut(buf, true);
+        }
+        if (p1SkipNonNeutral) {
+            char buf[192];
+            if (requireBothNeutral) {
+                snprintf(buf, sizeof(buf), "[RF][Freeze] P1 skip: both-not-neutral selfMove=%d selfAllowed=%s oppMove=%d oppAllowed=%s",
+                        (int)m1, (isAllowedNeutral(m1)?"true":"false"), (int)m2, (isAllowedNeutral(m2)?"true":"false"));
+            } else {
+                snprintf(buf, sizeof(buf), "[RF][Freeze] P1 skip non-neutral moveID=%d allowedNeutral=%s", (int)m1, (isAllowedNeutral(m1)?"true":"false"));
+            }
+            LogOut(buf, true);
+        }
+        if (p1SkipDelay) {
+            char buf[192];
+            snprintf(buf, sizeof(buf), "[RF][Freeze] P1 skip: both-neutral delay not met elapsed=%llums required=%dms selfMove=%d oppMove=%d",
+                    (unsigned long long)bothElapsedMs, bothNeutralDelayMs, (int)m1, (int)m2);
+            LogOut(buf, true);
+        }
+        if (p2SkipNonNeutral) {
+            char buf[192];
+            if (requireBothNeutral) {
+                snprintf(buf, sizeof(buf), "[RF][Freeze] P2 skip: both-not-neutral selfMove=%d selfAllowed=%s oppMove=%d oppAllowed=%s",
+                        (int)m2, (isAllowedNeutral(m2)?"true":"false"), (int)m1, (isAllowedNeutral(m1)?"true":"false"));
+            } else {
+                snprintf(buf, sizeof(buf), "[RF][Freeze] P2 skip non-neutral moveID=%d allowedNeutral=%s", (int)m2, (isAllowedNeutral(m2)?"true":"false"));
+            }
+            LogOut(buf, true);
+        }
+        if (p2SkipDelay) {
+            char buf[192];
+            snprintf(buf, sizeof(buf), "[RF][Freeze] P2 skip: both-neutral delay not met elapsed=%llums required=%dms selfMove=%d oppMove=%d",
+                    (unsigned long long)bothElapsedMs, bothNeutralDelayMs, (int)m2, (int)m1);
+            LogOut(buf, true);
+        }
+    }
+    #endif
 }
 
 void SetRFFreezeColorDesired(int player, bool enabled, bool blueIC) {
@@ -747,4 +1132,51 @@ void SetRFFreezeColorDesired(int player, bool enabled, bool blueIC) {
         rfFreezeColorP2Enabled = enabled;
         rfFreezeColorP2Blue = blueIC;
     }
+}
+
+// Query whether RF freeze is actively managing IC color for a player
+bool IsRFFreezeColorManaging(int player) {
+    if (player == 1) {
+        return rfFreezeP1Active.load() && rfFreezeColorP1Enabled;
+    } else if (player == 2) {
+        return rfFreezeP2Active.load() && rfFreezeColorP2Enabled;
+    }
+    return false;
+}
+
+// --- RF Freeze provenance/status implementation ---
+
+void StartRFFreezeOneFromUI(int player, double value) {
+    StartRFFreezeOne(player, value);
+    if (player == 1) rfFreezeOriginP1.store((int)RFFreezeOrigin::ManualUI);
+    else if (player == 2) rfFreezeOriginP2.store((int)RFFreezeOrigin::ManualUI);
+}
+
+void StartRFFreezeOneFromCR(int player, double value) {
+    StartRFFreezeOne(player, value);
+    if (player == 1) rfFreezeOriginP1.store((int)RFFreezeOrigin::ContinuousRecovery);
+    else if (player == 2) rfFreezeOriginP2.store((int)RFFreezeOrigin::ContinuousRecovery);
+}
+
+bool GetRFFreezeStatus(int player, bool& isActive, double& value, bool& colorManaged, bool& colorBlue) {
+    if (player == 1) {
+        isActive = rfFreezeP1Active.load();
+        value = rfFreezeValueP1.load();
+        colorManaged = (isActive && rfFreezeColorP1Enabled);
+        colorBlue = rfFreezeColorP1Blue;
+        return true;
+    } else if (player == 2) {
+        isActive = rfFreezeP2Active.load();
+        value = rfFreezeValueP2.load();
+        colorManaged = (isActive && rfFreezeColorP2Enabled);
+        colorBlue = rfFreezeColorP2Blue;
+        return true;
+    }
+    return false;
+}
+
+RFFreezeOrigin GetRFFreezeOrigin(int player) {
+    if (player == 1) return (RFFreezeOrigin)rfFreezeOriginP1.load();
+    if (player == 2) return (RFFreezeOrigin)rfFreezeOriginP2.load();
+    return RFFreezeOrigin::None;
 }

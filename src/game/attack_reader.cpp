@@ -60,7 +60,6 @@ static bool TryFindNestedAttackPtr(uintptr_t frameData, int& outOffset, uintptr_
     return false;
 }
 
-// Add this function to log detailed attack data
 void AttackReader::LogMoveData(int playerNum, short moveID) {
     if (moveID <= 0) {
         return; // Not an attack move
@@ -234,9 +233,10 @@ uintptr_t AttackReader::GetAttackDataPtr(int playerPtr, short /*moveID*/) {
         }
     }
 
-    // Legacy fallbacks (best-effort)
+    // Legacy fallbacks (best-effort). +0x168 is now known to be a raw result
+    // latch rather than an attack-data pointer; the guarded nested-pointer
+    // probe remains here only for compatibility with this historical scan.
     uintptr_t currentAttackData = 0;
-    // Legacy: treat these as frame-data fields and scan
     if (SafeReadMemory(playerPtr + 0x168, &currentAttackData, sizeof(uintptr_t)) && currentAttackData) {
         uintptr_t atk = 0; int foundOff = -1;
         if (TryFindNestedAttackPtr(currentAttackData, foundOff, atk)) return atk;
