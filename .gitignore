@@ -19,7 +19,9 @@ cmake_install.cmake
 install_manifest.txt
 compile_commands.json
 CTestTestfile.cmake
-
+tmp_ingn_fix/
+tmp_ingn_patch/
+tmp_ingn/rebase/
 # Visual Studio files
 .vs/
 .claude/
