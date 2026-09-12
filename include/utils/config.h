@@ -4,6 +4,8 @@
 #include <unordered_map>
 
 namespace Config {
+    // Caller serializes the accepted audio control transaction; never republishes.
+    void SetAudioSettingsMirror(int bgm, int se);
     struct Settings {
         // General settings
         bool useImGui;

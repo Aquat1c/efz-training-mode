@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include "runtime/practice_contract.h"
 
 enum class GameMode : uint8_t;
 enum class GamePhase : uint8_t;
@@ -52,6 +53,14 @@ bool ConsumeCompletedPracticeLoad(int p1SelectId, int p2SelectId, int stageId,
 // can never authorize setup in a later Match.
 void InvalidateCompletedPracticeLoadReceipt();
 
+uint32_t CaptureLoadingRequest(const EfzTmIdentityV1& identity);
+void ConsumeLoadingRequest(const EfzTmIdentityV1& identity,uint32_t ticket,uint32_t nativeResult,uint32_t acceptedResult);
+
+void OnBattleFrontendEntry(uintptr_t battleContext);
+void OnSelectorReady(uintptr_t selectorContext);
+uint32_t CaptureInitializedRequest(const EfzTmIdentityV1&);
+void OnNativeFrontendInstalled();
+void OnBattleInitialized(const EfzTmIdentityV1&,uint32_t ticket,uintptr_t battleContext,uintptr_t gameSystem);
 void Tick(GamePhase currentPhase, GameMode currentMode);
 bool IsBusy();
 bool CanQueueReload();

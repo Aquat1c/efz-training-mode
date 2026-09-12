@@ -15,7 +15,6 @@ extern const uintptr_t INPUT_BUFFER_INDEX_OFFSET;
 // Buffer freezing globals
 extern std::atomic<bool> g_bufferFreezingActive;
 extern std::atomic<bool> g_indexFreezingActive;
-extern std::thread g_bufferFreezeThread;
 extern std::vector<uint8_t> g_frozenBufferValues;
 extern uint16_t g_frozenBufferStartIndex;
 extern uint16_t g_frozenBufferLength;
@@ -24,9 +23,9 @@ extern uint16_t g_frozenIndexValue;
 extern std::atomic<int> g_activeFreezePlayer;
 
 // Serializes lease ownership, freeze publication, and stop/reset.  The
-// worker itself operates on an immutable snapshot and is invalidated through
-// a monotonically increasing generation, so a detached predecessor cannot
-// write or clean up a newer session.
+// worker operates on an immutable snapshot with a generation. Its native thread
+// handle is retained until the owner joins it; stale generations cannot write
+// or clean up a newer session.
 extern std::recursive_mutex g_bufferFreezeControlMutex;
 
 // Buffer freezing functions
@@ -38,3 +37,8 @@ void StopBufferFreezing();
 // Internal token-validated tutorial path; ordinary callers must use
 // StopBufferFreezing(), which will not tear down a tutorial-owned freeze.
 void StopBufferFreezingIgnoringTutorialLease();
+
+struct EfzTmEntryV1;
+bool BindBufferFreezeWorld(const EfzTmEntryV1& world);
+void CancelBufferFreezeWork();
+uint32_t RetireBufferFreezeWorld(const EfzTmEntryV1& heldWorld);

@@ -77,4 +77,8 @@ void Render(const DrawCtx& ctx);
 // Reset ring buffers (call on round start / character load / menu open).
 void Reset();
 
+// World/timeline boundary, after TickSample has drained. Also resets the
+// paused-step history that ordinary display clears intentionally preserve.
+void ResetTimeline();
+
 } // namespace FrameBar

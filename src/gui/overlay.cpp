@@ -1,3 +1,4 @@
+#include "utils/minhook_utils.h"
 #include <fstream>
 #include <iomanip>
 #include <chrono>
@@ -665,36 +666,20 @@ bool AttachEndSceneHookForCandidate(const EndSceneHookCandidate& candidate, cons
         << " module=" << candidate.modulePath;
     LogOut(oss.str(), true);
 
-    MH_STATUS cr = MH_CreateHook(candidate.target, HookedEndScene, reinterpret_cast<void**>(&oEndScene));
-    if (cr != MH_OK && cr != MH_ERROR_ALREADY_CREATED) {
-        const char* status = MH_StatusToString(cr);
-        LogOut(std::string("[OVERLAY][D3D9] Failed to create EndScene hook source=")
-               + (candidate.source ? candidate.source : "unknown")
-               + " status=" + (status ? status : "<unknown>"),
-               true);
+    if (g_EndSceneTarget && g_EndSceneTarget != candidate.target &&
+        MinHookUtils::HasOwnedTarget(g_EndSceneTarget)) {
+        LogOut("[OVERLAY][D3D9] Previous target retirement pending; retaining its callable original", true);
         return false;
     }
-
+    if (!MinHookUtils::CreateHook(candidate.target, reinterpret_cast<void*>(&HookedEndScene),
+            reinterpret_cast<void**>(&oEndScene), "[OVERLAY][D3D9]", "EndScene", nullptr, &MinHookUtils::TicketFor<&HookedEndScene>())) return false;
+    // Capture immediately, including failed enables and netplay racing attach.
+    g_EndSceneTarget = candidate.target;
     if (g_onlineModeActive.load(std::memory_order_relaxed)) {
-        LogOut("[OVERLAY][D3D9] Aborting EndScene enable because netplay suspend became active during attach", true);
-        if (cr == MH_OK) {
-            MH_RemoveHook(candidate.target);
-        }
+        MinHookUtils::CloseAdmission("[OVERLAY][D3D9]");
         return false;
     }
-
-    MH_STATUS er = MH_EnableHook(candidate.target);
-    if (er != MH_OK && er != MH_ERROR_ENABLED) {
-        const char* status = MH_StatusToString(er);
-        LogOut(std::string("[OVERLAY][D3D9] Failed to enable EndScene hook source=")
-               + (candidate.source ? candidate.source : "unknown")
-               + " status=" + (status ? status : "<unknown>"),
-               true);
-        if (cr == MH_OK) {
-            MH_RemoveHook(candidate.target);
-        }
-        return false;
-    }
+    if (!MinHookUtils::EnableHook(candidate.target, "[OVERLAY][D3D9]", "EndScene")) return false;
 
     g_EndSceneTarget = candidate.target;
     g_EndSceneTargetSource = candidate.source ? candidate.source : "unknown";
@@ -710,8 +695,8 @@ void RemoveEndSceneHookTarget(void* target) {
     if (!target) {
         return;
     }
-    MH_DisableHook(target);
-    MH_RemoveHook(target);
+    MinHookUtils::DisableHook(target, "[OVERLAY][D3D9]", "EndScene");
+    MinHookUtils::RemoveHook(target, "[OVERLAY][D3D9]", "EndScene");
 }
 
 bool TryRelatchEndSceneToLiveTarget(const char* trigger) {
@@ -746,6 +731,16 @@ bool TryRelatchEndSceneToLiveTarget(const char* trigger) {
     void* previousTarget = g_EndSceneTarget;
     const char* previousSource = g_EndSceneTargetSource;
     RemoveEndSceneHookTarget(previousTarget);
+    if (MinHookUtils::HasOwnedTarget(previousTarget)) {
+        // Relatch is optional. Keep the previously working overlay admitted
+        // while its replacement waits for a qualified retirement continuation.
+        if (!g_onlineModeActive.load(std::memory_order_relaxed)) {
+            (void)PracticeHooks::RestoreRetainedTargetAdmission(
+                MinHookUtils::OwnedHooks(), previousTarget, g_EndSceneHookEnabled);
+        }
+        g_endSceneRelatchInProgress.store(false, std::memory_order_release);
+        return false;
+    }
     g_EndSceneTarget = nullptr;
     DirectDrawHook::isHooked = false;
     g_EndSceneHookEnabled.store(false, std::memory_order_release);
@@ -806,6 +801,8 @@ HRESULT WINAPI DirectDrawHook::HookedFlip(IDirectDrawSurface7* This, IDirectDraw
 
 // --- REVISED AND CORRECTED D3D9 EndScene Hook ---
 HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
+    auto hookExecution = MinHookUtils::EnterExecution(MinHookUtils::TicketFor<&HookedEndScene>());
+    if (!hookExecution.Admitted()) return oEndScene(pDevice);
     if (!g_EndSceneObserved.load()) g_EndSceneObserved.store(true);
 
     if (g_onlineModeActive.load(std::memory_order_relaxed)) {
@@ -820,7 +817,7 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
     SetEndScenePhase("XInput snapshot");
 
     // Refresh XInput snapshot once per frame at the start of EndScene; other systems read cached state
-    XInputShim::RefreshSnapshotOncePerFrame();
+    if (XInputShim::IsPollingActive()) XInputShim::RefreshSnapshotOncePerFrame();
     // Minimal per-frame timing (RAII) to detect stalls without per-frame logs
     struct EndSceneFrameTimer {
         std::chrono::steady_clock::time_point t0;
@@ -895,6 +892,10 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
     // ImGui layer; SEH-guarded per renderer inside DispatchRenderers.
     SetEndScenePhase("external overlay renderers");
     OverlayApi::DispatchRenderers(pDevice, rtW, rtH);
+
+    // Training's Win32 backend polls input during NewFrame. Do not run it
+    // outside Practice Battle; separate registered renderers keep their call.
+    if (!XInputShim::IsPollingActive()) return oEndScene(pDevice);
 
     // Thread-safe ImGui initialization (only once)
     SetEndScenePhase("ImGui initialization");
@@ -2045,7 +2046,7 @@ bool DirectDrawHook::InitializeD3D9() {
     LPDIRECT3DDEVICE9 tempDevice;
     HRESULT hr = d3d9->CreateDevice(
         D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, d3dpp.hDeviceWindow,
-        D3DCREATE_SOFTWARE_VERTEXPROCESSING, &d3dpp, &tempDevice);
+        D3DCREATE_SOFTWARE_VERTEXPROCESSING | D3DCREATE_FPU_PRESERVE, &d3dpp, &tempDevice);
         
     if (FAILED(hr)) {
         // Log HRESULT in hex and decimal for easier lookup
@@ -2162,6 +2163,11 @@ bool DirectDrawHook::ShouldUseExternalMenuFallback() {
 }
 
 bool DirectDrawHook::SetD3D9Active(bool active) {
+    if (!active) {
+        MinHookUtils::CloseAdmission("[OVERLAY][D3D9]");
+        (void)MinHookUtils::DisableOwnedTargets("[OVERLAY][D3D9]", {});
+        (void)MinHookUtils::ReclaimDrainedTargets("[OVERLAY][D3D9]", {});
+    } else if (!MinHookUtils::EnableOwnedTargets("[OVERLAY][D3D9]")) { return false; }
     if (active && g_onlineModeActive.load(std::memory_order_relaxed)) {
         return false;
     }
@@ -2180,7 +2186,7 @@ bool DirectDrawHook::SetD3D9Active(bool active) {
             && g_ExternalMenuFallbackNeeded.load(std::memory_order_acquire)) {
             (void)TryRelatchEndSceneToLiveTarget("reactivate");
         }
-        return true;
+        return active || !MinHookUtils::HasOwnedTarget(g_EndSceneTarget);
     }
 
     g_EndSceneHookEnabled.store(active, std::memory_order_release);
@@ -2193,15 +2199,19 @@ bool DirectDrawHook::SetD3D9Active(bool active) {
     LogOut(std::string("[OVERLAY] D3D9 EndScene hook ") + (active ? "enabled" : "disabled")
            + " source=" + g_EndSceneTargetSource,
            true);
-    return true;
+    return active || !MinHookUtils::HasOwnedTarget(g_EndSceneTarget);
 }
 
 void DirectDrawHook::ShutdownD3D9() {
     LogOut("[OVERLAY] Shutting down D3D9 hooks.", true);
     GifPlayer::Shutdown();
     if (g_EndSceneTarget) {
-        MH_DisableHook(g_EndSceneTarget);
-        MH_RemoveHook(g_EndSceneTarget);
+        RemoveEndSceneHookTarget(g_EndSceneTarget);
+        if (MinHookUtils::HasOwnedTarget(g_EndSceneTarget)) {
+            g_EndSceneHookEnabled.store(false, std::memory_order_release);
+            LogOut("[OVERLAY][D3D9] Retirement pending; retaining original and render resources", true);
+            return;
+        }
         g_EndSceneTarget = nullptr;
     }
     Mission::TutorialSession::ReleaseRenderThreadState();

@@ -1760,16 +1760,12 @@ void OnRestrictPractice() {
     PersistBool("General", "restrictToPracticeMode", MutableSettings().restrictToPracticeMode);
 }
 void OnBgmVolume() {
-    PersistInt("General", "bgmVolumePercent", MutableSettings().bgmVolumePercent);
-    ExtendedConfigBridge::PublishAudioSettings(MutableSettings().bgmVolumePercent,
-                                               MutableSettings().seVolumePercent);
-    AudioControl::ApplyConfiguredVolumesNow();
+    ExtendedConfigBridge::PublishAudioLaneSetting(true, MutableSettings().bgmVolumePercent);
+    // One coalesced audio apply request is published with the tuple.
 }
 void OnSeVolume() {
-    PersistInt("General", "seVolumePercent", MutableSettings().seVolumePercent);
-    ExtendedConfigBridge::PublishAudioSettings(MutableSettings().bgmVolumePercent,
-                                               MutableSettings().seVolumePercent);
-    AudioControl::ApplyConfiguredVolumesNow();
+    ExtendedConfigBridge::PublishAudioLaneSetting(false, MutableSettings().seVolumePercent);
+    // One coalesced audio apply request is published with the tuple.
 }
 
 const char* FormatPercentRowValue(const Row& row) {

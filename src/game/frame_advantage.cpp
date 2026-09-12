@@ -35,10 +35,14 @@ FrameAdvantageState frameAdvState = {
 // Suppress regular FA overlay updates until this internal frame (0 = off)
 std::atomic<int> g_SkipRegularFAOverlayUntilFrame{0};
 
-// Wall-clock timer for FA message display (in milliseconds since epoch)
-static ULONGLONG g_displayUntilTimeMs = 0;
-
 namespace {
+
+struct FrameAdvantageClockState {
+    bool initialized = false;
+    int internalFrame = 0;
+    bool previouslyPaused = false;
+    uint32_t lastStep = 0;
+};
 
 struct FrameAdvantageScratchState {
     int p1LastDefenderFreeFrame = -1;
@@ -58,7 +62,25 @@ struct FrameAdvantageScratchState {
     int pendingAdvantageReadyInternalFrame = -1;
 };
 
-FrameAdvantageScratchState g_faScratch{};
+struct FrameAdvantageRuntimeState {
+    FrameAdvantageClockState clock;
+    FrameAdvantageScratchState scratch;
+    ULONGLONG displayUntilTimeMs = 0;
+    int staleFrameCounter = 0;
+    bool loggedFirstCall = false;
+    int debugLogCounter = 0;
+    short lastLoggedMoveID1 = -1;
+    short lastLoggedMoveID2 = -1;
+    short diagnosticPreviousMove1 = -1;
+    short diagnosticPreviousMove2 = -1;
+    int step3LogDecimator = 0;
+    int step4LogDecimator = 0;
+    int step5LogDecimator = 0;
+};
+
+FrameAdvantageRuntimeState g_faRuntime{};
+FrameAdvantageScratchState& g_faScratch = g_faRuntime.scratch;
+ULONGLONG& g_displayUntilTimeMs = g_faRuntime.displayUntilTimeMs;
 
 void ResetFrameAdvantageScratchState() {
     g_faScratch = FrameAdvantageScratchState{};
@@ -228,6 +250,13 @@ void ResetFrameAdvantageState() {
     ClearFrameAdvantageOverlayMessages();
 }
 
+void ResetFrameAdvantageTimeline() {
+    // Lifecycle owner calls this after old measurement work has drained.
+    // Ordinary exchange resets intentionally keep the active pause clock.
+    ResetFrameAdvantageState();
+    g_faRuntime = FrameAdvantageRuntimeState{};
+}
+
 // Helper to clear any active frame advantage overlay/message without
 // touching the underlying tracking state. Useful for actions like teleport.
 void ClearFrameAdvantageDisplay() {
@@ -257,10 +286,10 @@ int GetCurrentInternalFrame() {
     // - When not paused (or not in Practice), mirror the global frameCounter.
     // - When paused in Practice, advance only when the Practice step counter increments
     //   (each step is one visual frame = 3 internal frames).
-    static bool s_initialized = false;
-    static int s_faInternal = 0;
-    static bool s_prevPaused = false;
-    static uint32_t s_lastStep = 0;
+    auto& s_initialized = g_faRuntime.clock.initialized;
+    auto& s_faInternal = g_faRuntime.clock.internalFrame;
+    auto& s_prevPaused = g_faRuntime.clock.previouslyPaused;
+    auto& s_lastStep = g_faRuntime.clock.lastStep;
 
     int fcNow = frameCounter.load();
     GameMode mode = GetCurrentGameMode();
@@ -374,7 +403,7 @@ bool ShouldDelayRegularFADisplay(short prevMoveID, short moveID) {
 
 void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, short prevMoveID2) {
     if (g_deepFrameAdvDebug.load()) {
-        static bool s_loggedOnce = false;
+        auto& s_loggedOnce = g_faRuntime.loggedFirstCall;
         if (!s_loggedOnce) {
             LogOut("[FA_DIAG] MonitorFrameAdvantage ACTIVE - first call", true);
             s_loggedOnce = true;
@@ -394,7 +423,7 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     int &p2_last_attack_edge_frame = g_faScratch.p2LastAttackEdgeFrame;
     
     // Debug logging to track timer state
-    static int debugLogCounter = 0;
+    auto& debugLogCounter = g_faRuntime.debugLogCounter;
     if (++debugLogCounter % 60 == 0 && g_displayUntilTimeMs != 0) {
         #if defined(ENABLE_FRAME_ADV_DEBUG)
         ULONGLONG remaining = (currentTimeMs < g_displayUntilTimeMs) ? (g_displayUntilTimeMs - currentTimeMs) : 0;
@@ -413,8 +442,8 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     if (p2_attack_edge) p2_last_attack_edge_frame = currentInternalFrame;
     
     // Log moveID changes for debugging (only when they actually change).
-    static short lastLoggedMoveID1 = -1;
-    static short lastLoggedMoveID2 = -1;
+    auto& lastLoggedMoveID1 = g_faRuntime.lastLoggedMoveID1;
+    auto& lastLoggedMoveID2 = g_faRuntime.lastLoggedMoveID2;
     if (detailedLogging.load() && (moveID1 != lastLoggedMoveID1 || moveID2 != lastLoggedMoveID2)) {
      #if defined(ENABLE_FRAME_ADV_DEBUG)
         LogOut("[FRAME_ADV_DEBUG] MoveChange: frame=" + std::to_string(currentInternalFrame) +
@@ -571,7 +600,8 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
                             (moveID2 == GROUND_IC_ID || moveID2 == AIR_IC_ID);
 
     if (g_deepFrameAdvDebug.load()) {
-        static short s_diagPrevM1 = -1, s_diagPrevM2 = -1;
+        auto& s_diagPrevM1 = g_faRuntime.diagnosticPreviousMove1;
+        auto& s_diagPrevM2 = g_faRuntime.diagnosticPreviousMove2;
         if (moveID1 != s_diagPrevM1 || moveID2 != s_diagPrevM2) {
             LogOut("[FA_DIAG] MoveChange frame=" + std::to_string(currentInternalFrame) +
                    " p1=" + std::to_string(prevMoveID1) + "->" + std::to_string(moveID1) +
@@ -855,7 +885,7 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     if (frameAdvState.p1Attacking && frameAdvState.p1ActionableInternalFrame == -1) {
         bool attackerRecoveryEdge = (!IsActionable(prevMoveID1) && faSample.actionable1);
         if (g_deepFrameAdvDebug.load()) {
-            static int s_step3LogDecim = 0;
+            auto& s_step3LogDecim = g_faRuntime.step3LogDecimator;
             if ((s_step3LogDecim++ % 48) == 0) {
                 LogOut("[FA_DIAG] STEP3_WAIT P1atk: prevM1=" + std::to_string(prevMoveID1) +
                        " curM1=" + std::to_string(moveID1) +
@@ -938,7 +968,7 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
         
         bool defenderFreeEdge = (!IsActionable(prevMoveID2) && IsDefenderFreeForFA(prevMoveID2, moveID2, faSample.actionable2) && !shouldExcludeLanding);
         if (g_deepFrameAdvDebug.load()) {
-            static int s_step4LogDecim = 0;
+            auto& s_step4LogDecim = g_faRuntime.step4LogDecimator;
             if ((s_step4LogDecim++ % 48) == 0) {
                 LogOut("[FA_DIAG] STEP4_WAIT P2def: prevM2=" + std::to_string(prevMoveID2) +
                        " curM2=" + std::to_string(moveID2) +
@@ -994,8 +1024,6 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     // NEW: Handle whiff -> cancel -> both neutral sequence where defender never entered block/hit state.
     // If attacker recovery edge and defender free edge occur close together without any connect classification,
     // attempt a synthetic frame advantage using neutral alignment.
-    static int p1SyntheticWindowStart = -1;
-    static int p2SyntheticWindowStart = -1;
     // Track potential synthetic windows for P1 attacking
     if (frameAdvState.p1Attacking && frameAdvState.p1ActionableInternalFrame != -1 && frameAdvState.p2DefenderFreeInternalFrame == -1) {
         // Defender remained actionable (never lost actionability) implies whiff sequence;
@@ -1024,7 +1052,7 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     // STEP 5: Calculate frame advantage when all necessary data is available
     if (g_deepFrameAdvDebug.load()) {
         if (frameAdvState.p1Attacking || frameAdvState.p2Attacking) {
-            static int s_step5LogDecim = 0;
+            auto& s_step5LogDecim = g_faRuntime.step5LogDecimator;
             if ((s_step5LogDecim++ % 48) == 0) {
                 LogOut("[FA_DIAG] STEP5_STATE: p1Atk=" + std::to_string(frameAdvState.p1Attacking) +
                        " p1Calc=" + std::to_string(frameAdvState.p1AdvantageCalculated) +
@@ -1107,7 +1135,7 @@ void MonitorFrameAdvantage(short moveID1, short moveID2, short prevMoveID1, shor
     
     // STEP 6: Timeout detection for stale states (reworked to tolerate long throw/tech sequences)
     // Only increment the stale counter when we're not still waiting for required actionable/free events.
-    static int staleFrameCounter = 0;
+    auto& staleFrameCounter = g_faRuntime.staleFrameCounter;
     bool hasActiveTracking = (frameAdvState.p1Attacking && !frameAdvState.p1AdvantageCalculated) ||
                              (frameAdvState.p2Attacking && !frameAdvState.p2AdvantageCalculated);
 

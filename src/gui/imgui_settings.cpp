@@ -356,40 +356,32 @@ namespace ImGuiSettings {
                 ImGui::Separator();
                 ImGui::SeparatorText("Audio");
 
-                int bgmVolumePercent = cfg.bgmVolumePercent;
+                int bgmVolumePercent = AudioControl::GetConfiguredBgmVolumePercent();
                 ImGui::Text("BGM Volume:");
                 ImGui::SameLine();
                 ImGui::SetNextItemWidth(200);
                 if (ImGui::SliderInt("##BgmVolumePercent", &bgmVolumePercent, 0, 100, "%d%%")) {
-                    Config::SetSetting("General", "bgmVolumePercent", std::to_string(bgmVolumePercent));
-                    ExtendedConfigBridge::PublishAudioSettings(Config::GetSettings().bgmVolumePercent,
-                                                               Config::GetSettings().seVolumePercent);
-                    AudioControl::ApplyConfiguredVolumesNow();
+                    ExtendedConfigBridge::PublishAudioLaneSetting(true, bgmVolumePercent);
+                    // One coalesced audio apply request is published with the tuple.
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Reset##BgmVolumePercent")) {
-                    Config::SetSetting("General", "bgmVolumePercent", "100");
-                    ExtendedConfigBridge::PublishAudioSettings(Config::GetSettings().bgmVolumePercent,
-                                                               Config::GetSettings().seVolumePercent);
-                    AudioControl::ApplyConfiguredVolumesNow();
+                    ExtendedConfigBridge::PublishAudioLaneSetting(true, 100);
+                    // One coalesced audio apply request is published with the tuple.
                 }
 
-                int seVolumePercent = cfg.seVolumePercent;
+                int seVolumePercent = AudioControl::GetConfiguredSeVolumePercent();
                 ImGui::Text("SE Volume:");
                 ImGui::SameLine();
                 ImGui::SetNextItemWidth(200);
                 if (ImGui::SliderInt("##SeVolumePercent", &seVolumePercent, 0, 100, "%d%%")) {
-                    Config::SetSetting("General", "seVolumePercent", std::to_string(seVolumePercent));
-                    ExtendedConfigBridge::PublishAudioSettings(Config::GetSettings().bgmVolumePercent,
-                                                               Config::GetSettings().seVolumePercent);
-                    AudioControl::ApplyConfiguredVolumesNow();
+                    ExtendedConfigBridge::PublishAudioLaneSetting(false, seVolumePercent);
+                    // One coalesced audio apply request is published with the tuple.
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Reset##SeVolumePercent")) {
-                    Config::SetSetting("General", "seVolumePercent", "100");
-                    ExtendedConfigBridge::PublishAudioSettings(Config::GetSettings().bgmVolumePercent,
-                                                               Config::GetSettings().seVolumePercent);
-                    AudioControl::ApplyConfiguredVolumesNow();
+                    ExtendedConfigBridge::PublishAudioLaneSetting(false, 100);
+                    // One coalesced audio apply request is published with the tuple.
                 }
 
                 ImGui::Spacing();

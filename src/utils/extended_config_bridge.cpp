@@ -2,6 +2,9 @@
 
 #include "../include/core/logger.h"
 #include "../include/utils/config.h"
+#include "../include/utils/audio_runtime_state.h"
+#include "../include/utils/audio_file_control.h"
+#include <mutex>
 
 #include <windows.h>
 
@@ -15,13 +18,14 @@
 namespace ExtendedConfigBridge {
 namespace {
 
-constexpr DWORD kRefreshMs = 1000;
+std::recursive_mutex g_controlMutex;
+bool g_admitted = false;
+HANDLE g_stop = nullptr, g_thread = nullptr, g_change = INVALID_HANDLE_VALUE;
+HMODULE g_providerModule = nullptr;
+const EfzAudioOwnerApiV1* g_provider = nullptr;
 
 Status g_status{};
-DWORD g_lastRefreshTick = 0;
-FILETIME g_lastConfigWriteTime{};
-bool g_haveConfigWriteTime = false;
-bool g_loggedDiscovery = false;
+
 
 int ClampPercent(int value) {
     return std::clamp(value, 0, 100);
@@ -30,19 +34,6 @@ int ClampPercent(int value) {
 bool FileExists(const std::filesystem::path& path) {
     std::error_code ec;
     return std::filesystem::exists(path, ec) && std::filesystem::is_regular_file(path, ec);
-}
-
-bool TryGetWriteTime(const std::string& path, FILETIME& outTime) {
-    WIN32_FILE_ATTRIBUTE_DATA data{};
-    if (!GetFileAttributesExA(path.c_str(), GetFileExInfoStandard, &data)) {
-        return false;
-    }
-    outTime = data.ftLastWriteTime;
-    return true;
-}
-
-bool SameFileTime(const FILETIME& a, const FILETIME& b) {
-    return a.dwLowDateTime == b.dwLowDateTime && a.dwHighDateTime == b.dwHighDateTime;
 }
 
 std::string ModulePath(HMODULE module) {
@@ -174,43 +165,6 @@ void ReadSharedConfig(Status& status) {
     status.controlsShared = sharedEnabled && controlsEnabled;
 }
 
-void LogDiscoveryIfChanged(const Status& previous, const Status& current) {
-    const bool changed = !g_loggedDiscovery
-        || previous.modLoaded != current.modLoaded
-        || previous.sharedConfigFound != current.sharedConfigFound
-        || previous.audioShared != current.audioShared
-        || previous.controlsShared != current.controlsShared
-        || previous.sharedConfigPath != current.sharedConfigPath
-        || previous.audioRevision != current.audioRevision
-        || previous.controlsRevision != current.controlsRevision;
-
-    if (!changed) {
-        return;
-    }
-
-    g_loggedDiscovery = true;
-    std::ostringstream oss;
-    oss << "[EXTCFG] status mod=" << (current.modLoaded ? "1" : "0")
-        << " sharedFile=" << (current.sharedConfigFound ? "1" : "0")
-        << " audio=" << (current.audioShared ? "1" : "0")
-        << " controls=" << (current.controlsShared ? "1" : "0");
-    if (!current.moduleName.empty()) {
-        oss << " module=" << current.moduleName;
-    }
-    if (!current.sharedConfigPath.empty()) {
-        oss << " path=" << current.sharedConfigPath;
-    }
-    if (current.audioShared) {
-        oss << " bgm=" << current.bgmVolumePercent
-            << " se=" << current.seVolumePercent
-            << " audioRev=" << current.audioRevision;
-    }
-    if (current.controlsShared) {
-        oss << " controlsRev=" << current.controlsRevision;
-    }
-    LogOut(oss.str(), true);
-}
-
 bool WriteIniInt(const char* section, const char* key, int value, const std::string& path) {
     char buf[32];
     _snprintf_s(buf, sizeof(buf), _TRUNCATE, "%d", value);
@@ -220,112 +174,161 @@ bool WriteIniInt(const char* section, const char* key, int value, const std::str
 } // namespace
 
 bool Refresh(bool force) {
-    const DWORD now = GetTickCount();
-    if (!force && g_lastRefreshTick != 0 && (now - g_lastRefreshTick) < kRefreshMs) {
-        return g_status.sharedConfigFound || g_status.modLoaded;
-    }
-    g_lastRefreshTick = now;
-
-    Status next{};
-    FindLoadedModule(next);
-    FindSharedConfigPath(next);
-
-    FILETIME writeTime{};
-    const bool haveWriteTime = !next.sharedConfigPath.empty() && TryGetWriteTime(next.sharedConfigPath, writeTime);
-    if (!force
-        && haveWriteTime
-        && g_haveConfigWriteTime
-        && SameFileTime(writeTime, g_lastConfigWriteTime)
-        && next.modLoaded == g_status.modLoaded
-        && next.sharedConfigPath == g_status.sharedConfigPath) {
-        return g_status.sharedConfigFound || g_status.modLoaded;
-    }
-
-    if (haveWriteTime) {
-        g_lastConfigWriteTime = writeTime;
-        g_haveConfigWriteTime = true;
-    } else {
-        g_haveConfigWriteTime = false;
-    }
-
+    (void)force;
+    std::lock_guard<std::recursive_mutex> lock(g_controlMutex);
+    if (!g_admitted) return false;
+    EfzAudioFileTransaction transaction;
+    if (!transaction) return false;
+    if (ReadIniInt("Audio", "writeInProgress", 0, g_status.sharedConfigPath) != 0) return false;
+    Status next = g_status;
+    next.sharedConfigFound = false;
+    next.audioShared = false;
+    next.bgmVolumeAvailable = next.seVolumeAvailable = false;
     ReadSharedConfig(next);
-    LogDiscoveryIfChanged(g_status, next);
+    if (ReadIniInt("Audio", "writeInProgress", 0, g_status.sharedConfigPath) != 0) return false;
     g_status = next;
-    return g_status.sharedConfigFound || g_status.modLoaded;
+    if (next.audioShared) {
+        const auto previous = AudioControl::ReadAudioSettings();
+        AudioControl::PublishAudioPercents(next.bgmVolumeAvailable ? next.bgmVolumePercent : previous.bgmPercent,
+                                          next.seVolumeAvailable ? next.seVolumePercent : previous.sePercent);
+    }
+    return next.sharedConfigFound || next.modLoaded;
+}
+
+namespace {
+DWORD WINAPI AudioNotificationWorker(LPVOID) {
+    HANDLE handles[] = {g_stop, g_change};
+    const DWORD count = g_change == INVALID_HANDLE_VALUE ? 1 : 2;
+    for (;;) {
+        const DWORD result = WaitForMultipleObjects(count, handles, FALSE, INFINITE);
+        if (result != WAIT_OBJECT_0 + 1) break;
+        // Rearm before reading: changes during import remain signalled.
+        if (!FindNextChangeNotification(g_change)) break;
+        Refresh(true); // fixed location; audio tuple only, no Config/game fields
+    }
+    return 0;
+}
+struct TransferContext { EfzAudioOwnerV1 expected; bool committed = false; };
+void __cdecl CommitTransfer(const EfzAudioOwnerV1* record, void* opaque) {
+    auto& context = *static_cast<TransferContext*>(opaque);
+    if (record && record->providerIncarnation == context.expected.providerIncarnation &&
+        record->acknowledgementGeneration == context.expected.acknowledgementGeneration + 1)
+        context.committed = AudioControl::AcknowledgeAudioOwner(*record);
+}
+}
+
+bool InitializeAudioControl() {
+    std::lock_guard<std::recursive_mutex> lock(g_controlMutex);
+    if (g_admitted) return true;
+    FindLoadedModule(g_status);
+    FindSharedConfigPath(g_status);
+    if (g_status.sharedConfigPath.empty()) {
+        char current[MAX_PATH]{};
+        if (!GetCurrentDirectoryA(MAX_PATH, current)) return false;
+        g_status.sharedConfigPath = (std::filesystem::path(current) / "efz_extended_config.ini").string();
+    }
+    if (g_status.modLoaded) {
+        HMODULE module = GetModuleHandleA(g_status.moduleName.c_str());
+        auto getApi = reinterpret_cast<EfzGetAudioOwnerApiV1>(GetProcAddress(module, "EfzGetAudioOwnerV1"));
+        if (getApi && GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                reinterpret_cast<LPCSTR>(getApi), &g_providerModule)) {
+            const auto* api = getApi();
+            if (api && api->size == sizeof(*api) && api->version == 1 && api->providerIncarnation &&
+                api->enter && api->leave && api->query && api->retire) {
+                EfzAudioOwnerV1 record{};
+                if (api->query(&record) && record.providerIncarnation == api->providerIncarnation) {
+                    g_provider = api;
+                    AudioControl::BindAudioBoundary(api);
+                    AudioControl::EnterAudioBoundary();
+                    const bool acknowledged = AudioControl::AcknowledgeAudioOwner(record);
+                    AudioControl::LeaveAudioBoundary();
+                    if (!acknowledged) g_provider = nullptr;
+                }
+            }
+        }
+        if (!g_provider) {
+            AudioControl::MarkIncompatibleAudioOwner(EfzAudioAllLanes);
+            g_status.audioCompatibilityError = "ExtendedConfig runtime has no acknowledged raw/adjusted gain contract";
+            LogOut("[AUDIO][OWNER] " + g_status.audioCompatibilityError, true);
+        }
+    }
+    // Watch a known existing parent even if the admitted file/subdirectory is missing.
+    auto parent = std::filesystem::path(g_status.sharedConfigPath).parent_path();
+    std::error_code ec;
+    while (!parent.empty() && !std::filesystem::is_directory(parent, ec)) parent = parent.parent_path();
+    if (!parent.empty()) g_change = FindFirstChangeNotificationA(parent.string().c_str(), TRUE,
+        FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_SIZE);
+    g_stop = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+    g_admitted = true;
+    AudioControl::PublishAudioPercents(Config::GetSettings().bgmVolumePercent, Config::GetSettings().seVolumePercent);
+    Refresh(true);
+    if (g_stop) g_thread = CreateThread(nullptr, 0, AudioNotificationWorker, nullptr, 0, nullptr);
+    if (!g_thread) LogOut("[AUDIO] audio directory notification worker could not start", true);
+    return g_thread != nullptr;
+}
+
+void SignalAudioControlStop() { if (g_stop) SetEvent(g_stop); }
+void StopAudioControl() {
+    // Explicit pre-unload control operation only; never called under loader lock.
+    SignalAudioControlStop();
+    if (g_thread) { WaitForSingleObject(g_thread, INFINITE); CloseHandle(g_thread); g_thread = nullptr; }
+    if (g_change != INVALID_HANDLE_VALUE) { FindCloseChangeNotification(g_change); g_change = INVALID_HANDLE_VALUE; }
+    if (g_stop) { CloseHandle(g_stop); g_stop = nullptr; }
+    // Provider reference/boundary remains retained until all native hooks drain.
+}
+
+bool RequestTrainingGainOwnership(uint32_t lanes, int bgmPercent, int sePercent) {
+    AudioControl::PublishAudioPercents(bgmPercent, sePercent);
+    if (!g_provider) return false;
+    TransferContext context{};
+    if (!g_provider->query(&context.expected)) return false;
+    return g_provider->retire(&context.expected, lanes, CommitTransfer, &context) && context.committed;
 }
 
 bool ImportAudioSettingsIfAvailable(bool force) {
-    Refresh(force);
-    if (!g_status.audioShared) {
-        return false;
-    }
-
-    bool changed = false;
-    if (g_status.bgmVolumeAvailable && Config::GetSettings().bgmVolumePercent != g_status.bgmVolumePercent) {
-        Config::SetSetting("General", "bgmVolumePercent", std::to_string(g_status.bgmVolumePercent));
-        changed = true;
-    }
-    if (g_status.seVolumeAvailable && Config::GetSettings().seVolumePercent != g_status.seVolumePercent) {
-        Config::SetSetting("General", "seVolumePercent", std::to_string(g_status.seVolumePercent));
-        changed = true;
-    }
-
-    if (changed) {
-        std::ostringstream oss;
-        oss << "[AUDIO][SHARED] imported ExtendedConfig audio bgm="
-            << Config::GetSettings().bgmVolumePercent
-            << " se=" << Config::GetSettings().seVolumePercent
-            << " path=" << g_status.sharedConfigPath;
-        LogOut(oss.str(), true);
-    }
-    return changed;
+    std::lock_guard<std::recursive_mutex> lock(g_controlMutex);
+    EfzAudioFileTransaction transaction;
+    if (!transaction || !Refresh(force) || !g_status.audioShared) return false;
+    // Refresh and mirror remain one control transaction; the worker cannot
+    // publish a newer file tuple between them. Never replay cached status.
+    const auto view = AudioControl::ReadAudioSettings();
+    Config::SetAudioSettingsMirror(view.bgmPercent, view.sePercent);
+    return true;
 }
 
 bool PublishAudioSettings(int bgmPercent, int sePercent) {
-    Refresh(false);
-    if (g_status.sharedConfigPath.empty()) {
+    std::lock_guard<std::recursive_mutex> lock(g_controlMutex);
+    EfzAudioFileTransaction transaction;
+    if (!transaction) return false;
+    const int bgm = ClampPercent(bgmPercent), se = ClampPercent(sePercent);
+    if (!g_admitted || (!g_status.modLoaded && !g_status.sharedConfigFound)) {
+        // Standalone local settings do not depend on an optional shared file.
+        AudioControl::PublishAudioPercents(bgm, se);
+        Config::SetAudioSettingsMirror(bgm, se);
         return false;
     }
-    if (!g_status.modLoaded && !g_status.sharedConfigFound) {
-        return false;
-    }
-
-    const int bgm = ClampPercent(bgmPercent);
-    const int se = ClampPercent(sePercent);
-    const int revision = (g_status.audioRevision > 0 ? g_status.audioRevision : 0) + 1;
-
-    bool ok = true;
-    ok = WritePrivateProfileStringA("Shared", "version", "1", g_status.sharedConfigPath.c_str()) != FALSE && ok;
-    ok = WritePrivateProfileStringA("Shared", "enabled", "1", g_status.sharedConfigPath.c_str()) != FALSE && ok;
-    ok = WritePrivateProfileStringA("Shared", "audio", "1", g_status.sharedConfigPath.c_str()) != FALSE && ok;
-    ok = WritePrivateProfileStringA("Shared", "lastWriter", "efz-training-mode", g_status.sharedConfigPath.c_str()) != FALSE && ok;
-    ok = WritePrivateProfileStringA("Audio", "enabled", "1", g_status.sharedConfigPath.c_str()) != FALSE && ok;
-    ok = WriteIniInt("Audio", "bgmVolumePercent", bgm, g_status.sharedConfigPath) && ok;
-    ok = WriteIniInt("Audio", "seVolumePercent", se, g_status.sharedConfigPath) && ok;
-    ok = WriteIniInt("Audio", "revision", revision, g_status.sharedConfigPath) && ok;
-
-    if (ok) {
-        g_lastRefreshTick = 0;
-        Refresh(true);
-        std::ostringstream oss;
-        oss << "[AUDIO][SHARED] published ExtendedConfig audio bgm=" << bgm
-            << " se=" << se
-            << " path=" << g_status.sharedConfigPath;
-        LogOut(oss.str(), true);
-    } else {
-        LogOut("[AUDIO][SHARED] failed to publish ExtendedConfig audio", true);
-    }
-    return ok;
+    const auto& path = g_status.sharedConfigPath;
+    if (!WriteIniInt("Audio", "writeInProgress", 1, path)) return false;
+    const int previousRevision = ReadIniInt("Audio", "revision", 0, path);
+    if (!WriteIniInt("Audio", "bgmVolumePercent", bgm, path) ||
+        !WriteIniInt("Audio", "seVolumePercent", se, path) ||
+        !WriteIniInt("Audio", "revision", previousRevision == INT_MAX ? 1 : previousRevision + 1, path) ||
+        !WriteIniInt("Audio", "writeInProgress", 0, path)) return false;
+    // Only a successful complete pair changes the acknowledged runtime tuple.
+    AudioControl::PublishAudioPercents(bgm, se);
+    Config::SetAudioSettingsMirror(bgm, se);
+    Refresh(true);
+    return true;
 }
 
-const Status& GetStatus() {
-    Refresh(false);
-    return g_status;
+bool PublishAudioLaneSetting(bool bgm, int percent) {
+    std::lock_guard<std::recursive_mutex> lock(g_controlMutex);
+    EfzAudioFileTransaction transaction;
+    if (!transaction) return false;
+    const auto view = AudioControl::ReadAudioSettings();
+    return PublishAudioSettings(bgm ? percent : view.bgmPercent, bgm ? view.sePercent : percent);
 }
-
-bool IsSharedAudioActive() {
-    Refresh(false);
-    return g_status.audioShared;
-}
-
+Status GetStatus() { std::lock_guard<std::recursive_mutex> lock(g_controlMutex); return g_status; }
+bool IsSharedAudioActiveCached() { return GetStatus().audioShared; }
+bool IsSharedAudioActive() { return IsSharedAudioActiveCached(); }
 } // namespace ExtendedConfigBridge

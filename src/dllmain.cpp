@@ -4,6 +4,10 @@
 #include <vector>
 #include <windows.h>
 #include <thread>
+#include "runtime/practice_runtime.h"
+#include "runtime/practice_worker.h"
+#include "game/character_hotswap.h"
+#include "utils/minhook_utils.h"
 #include "../include/utils/xp_compat.h"
 #include "../include/core/memory.h"
 #include "../include/utils/utilities.h"
@@ -160,6 +164,11 @@ void DelayedInitialization(HMODULE hModule) {
             return; // Early exit if MinHook fails
         }
         LogOut("[SYSTEM] MinHook initialized successfully.", true);
+        Practice::BindRuntimeResources(MinHookUtils::OwnedHooks(),Practice::NativePatchLedger());
+        Practice::BindLoadingRequestConsumer(CharacterHotswap::CaptureLoadingRequest,CharacterHotswap::ConsumeLoadingRequest);
+        Practice::BindMeasurementResetConsumer(Practice::ResetPracticeMeasurements);
+        Practice::BindInputRetirementConsumer(Practice::CapturePracticeInputBaseline,Practice::RetirePracticeInput,Practice::CancelPracticeInputWork);
+        Practice::RegisterExistingPracticeProvider();
 
         // The unfinished trial/tutorial flow is retained for future work, but
         // default builds leave EFZ's title screen and vanilla Practice entry
@@ -354,7 +363,7 @@ void DelayedInitialization(HMODULE hModule) {
     // Start essential threads.
     LogOut("[SYSTEM] Starting background threads...", true);
     // Note: UpdateConsoleTitle thread is already started by InitializeLogging(); don't start a duplicate here.
-    std::thread(FrameDataMonitor).detach();
+    if(Practice::LegacyMonitorStartupRequired()) (void)Practice::StartMonitorThread();
     std::thread(LifecycleWatcherThread).detach();
         LogOut("[SYSTEM] Essential background threads started.", true);
 
@@ -419,7 +428,7 @@ void InitializeConfig() {
     LogOut("[SYSTEM] Initializing configuration system...", true);
     if (Config::Initialize()) {
         LogOut("[SYSTEM] Configuration loaded successfully", true);
-        ExtendedConfigBridge::Refresh(true);
+        ExtendedConfigBridge::InitializeAudioControl();
         ExtendedConfigBridge::ImportAudioSettingsIfAvailable(true);
         
         // Apply settings
@@ -456,11 +465,13 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         }
         break;
     case DLL_PROCESS_DETACH:
+        ExtendedConfigBridge::SignalAudioControlStop();
         // Signal-only during process termination. Windows is already reclaiming
         // process resources and DllMain holds the loader lock; waiting for
         // workers, flushing streams, or asking MinHook/DirectX to unload here
         // can deadlock the exit path.
         g_isShuttingDown = true;
+        Practice::RequestMonitorStop();
         g_featuresEnabled = false;
         if (lpReserved != nullptr) {
             break;

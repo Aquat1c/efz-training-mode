@@ -20,6 +20,10 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <cstring>
+#include "runtime/practice_runtime.h"
+#include "runtime/practice_session.h"
+#include "runtime/practice_worker.h"
 
 // Define the buffer constants here
 // IMPORTANT: The actual input buffer is 180 bytes long. Using 0x180 (384)
@@ -31,7 +35,6 @@ const uintptr_t INPUT_BUFFER_INDEX_OFFSET = 0x260;  // Current buffer index offs
 // Define the freeze buffer variables here
 std::atomic<bool> g_bufferFreezingActive(false);
 std::atomic<bool> g_indexFreezingActive(false);
-std::thread g_bufferFreezeThread;
 std::vector<uint8_t> g_frozenBufferValues;
 uint16_t g_frozenBufferStartIndex = 0;
 uint16_t g_frozenBufferLength = 0;
@@ -41,6 +44,82 @@ std::recursive_mutex g_bufferFreezeControlMutex;
 
 namespace {
 std::atomic<uint64_t> g_bufferFreezeGeneration{0};
+EfzTmEntryV1 bufferWorld{};
+bool bufferWorldBound=false;
+std::atomic<bool> bufferWorkClosed{false},bufferWorkerFault{false};
+HANDLE bufferWake=nullptr;
+struct BufferThreadRecord {HANDLE thread=nullptr;HMODULE module=nullptr;};
+std::vector<BufferThreadRecord> bufferThreads;
+struct BufferWrites {
+    uint8_t before[180]{},last[180]{};
+    bool owned[180]{};
+    uint16_t indexBefore=0,indexLast=0;
+    bool indexOwned=false;
+};
+BufferWrites bufferWrites[2];
+bool SameBufferWorld(const EfzTmEntryV1& a,const EfzTmEntryV1& b) {
+    return a.id.providerIncarnation==b.id.providerIncarnation && a.id.practiceSession==b.id.practiceSession &&
+        a.id.battleWorld==b.id.battleWorld && a.id.timeline==b.id.timeline &&
+        a.gameSystem==b.gameSystem && a.battleContext==b.battleContext && a.player1==b.player1 && a.player2==b.player2 &&
+        a.efzBase==b.efzBase && a.revivalBase==b.revivalBase && a.profileId==b.profileId;
+}
+bool CopyBufferData(uintptr_t address,const void* source,size_t size) {
+    if(!address || !source || !size || address+size<address)return false;
+    uintptr_t cursor=address;
+    while(cursor<address+size) {
+        MEMORY_BASIC_INFORMATION info{};
+        if(!VirtualQuery(reinterpret_cast<void*>(cursor),&info,sizeof(info)) || info.State!=MEM_COMMIT ||
+           (info.Protect&(PAGE_GUARD|PAGE_NOACCESS)))return false;
+        const DWORD protection=info.Protect&0xff;
+        if(protection!=PAGE_READWRITE && protection!=PAGE_WRITECOPY &&
+           protection!=PAGE_EXECUTE_READWRITE && protection!=PAGE_EXECUTE_WRITECOPY)return false;
+        const uintptr_t end=reinterpret_cast<uintptr_t>(info.BaseAddress)+info.RegionSize;
+        if(end<=cursor)return false;
+        cursor=(std::min)(end,address+size);
+    }
+    __try {memcpy(reinterpret_cast<void*>(address),source,size);return true;}
+    __except(EXCEPTION_EXECUTE_HANDLER){return false;}
+}
+bool WriteFreezeMemory(uintptr_t address,const void* source,size_t size) {
+    if(!bufferWorldBound)return SafeWriteMemory(address,source,size);
+    for(int player=0;player<2;++player) {
+        const uintptr_t base=player?bufferWorld.player2:bufferWorld.player1;
+        auto& record=bufferWrites[player];
+        if(address>=base+INPUT_BUFFER_OFFSET && address+size>=address && address+size<=base+INPUT_BUFFER_OFFSET+INPUT_BUFFER_SIZE) {
+            const size_t offset=address-base-INPUT_BUFFER_OFFSET;
+            for(size_t n=0;n<size;++n) {
+                const size_t index=offset+n;
+                if(!record.owned[index] && !SafeReadMemory(address+n,&record.before[index],1))return false;
+                record.owned[index]=true;record.last[index]=static_cast<const uint8_t*>(source)[n];
+            }
+            return CopyBufferData(address,source,size);
+        }
+        if(address==base+INPUT_BUFFER_INDEX_OFFSET && size==sizeof(uint16_t)) {
+            if(!record.indexOwned && !SafeReadMemory(address,&record.indexBefore,sizeof(uint16_t)))return false;
+            record.indexOwned=true;memcpy(&record.indexLast,source,sizeof(uint16_t));
+            return CopyBufferData(address,source,size);
+        }
+    }
+    return false;
+}
+uintptr_t FreezePlayerPointer(int player) {
+    return bufferWorldBound?(player==1?bufferWorld.player1:player==2?bufferWorld.player2:0):GetPlayerPointer(player);
+}
+bool FreezeFacing(int player) {
+    if(!bufferWorldBound)return GetPlayerFacingDirection(player);
+    uint8_t facing=0;
+    return SafeReadMemory(FreezePlayerPointer(player)+FACING_DIRECTION_OFFSET,&facing,sizeof(facing)) && facing==1;
+}
+bool ReapBufferThreads(bool drained=false) {
+    for(auto it=bufferThreads.begin();it!=bufferThreads.end();) {
+        const DWORD result=WaitForSingleObject(it->thread,drained?INFINITE:0);
+        if(result==WAIT_TIMEOUT){++it;continue;}
+        if(result!=WAIT_OBJECT_0 || !CloseHandle(it->thread)){bufferWorkerFault.store(true);++it;continue;}
+        if(it->module)FreeLibrary(it->module);
+        it=bufferThreads.erase(it);
+    }
+    return bufferThreads.empty();
+}
 std::atomic<uint64_t> g_freezeInitializedGeneration{0};
 
 struct BufferFreezeSnapshot {
@@ -54,11 +133,14 @@ struct BufferFreezeSnapshot {
     int motionType = -1;
     int buttonMask = 0;
     bool facingRight = false;
+    bool scoped=false;
+    EfzTmEntryV1 world{};
 };
 
 bool OwnsFreezeGeneration(uint64_t generation) {
     return generation != 0 &&
-           g_bufferFreezeGeneration.load(std::memory_order_acquire) == generation;
+           g_bufferFreezeGeneration.load(std::memory_order_acquire) == generation &&
+           !bufferWorkClosed.load(std::memory_order_acquire);
 }
 
 uint64_t NextFreezeGeneration() {
@@ -308,18 +390,18 @@ static bool RegeneratePatternForFacing(int playerNum, int motionType, int button
     frozenLength = static_cast<uint16_t>(pattern.size());
     
     // Write the new pattern to the buffer immediately
-    uintptr_t playerPtr = GetPlayerPointer(playerNum);
+    uintptr_t playerPtr = FreezePlayerPointer(playerNum);
     if (playerPtr) {
         const uint16_t len = static_cast<uint16_t>(pattern.size());
         const uint16_t len1 = static_cast<uint16_t>(
             std::min<uint16_t>(len, INPUT_BUFFER_SIZE - startIndex));
         const uint16_t len2 = static_cast<uint16_t>(len - len1);
         if (len1 != 0) {
-            SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + startIndex,
+            WriteFreezeMemory(playerPtr + INPUT_BUFFER_OFFSET + startIndex,
                             pattern.data(), len1);
         }
         if (len2 != 0) {
-            SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET,
+            WriteFreezeMemory(playerPtr + INPUT_BUFFER_OFFSET,
                             pattern.data() + len1, len2);
         }
         if (detailedLogging.load()) {
@@ -336,6 +418,8 @@ static bool RegeneratePatternForFacing(int playerNum, int motionType, int button
 static void FreezeBufferValuesThread(BufferFreezeSnapshot state) {
     const int playerNum = state.playerNum;
     const uint64_t generation = state.generation;
+    auto work=state.scoped?Practice::TryEnterMonitorWork():Practice::WorkLease{};
+    if(state.scoped && (!work || !SameBufferWorld(work.Context(),state.world)))return;
     // CRITICAL: Never run during online mode
     if (g_onlineModeActive.load()) {
         std::lock_guard<std::recursive_mutex> lock(g_bufferFreezeControlMutex);
@@ -361,7 +445,7 @@ static void FreezeBufferValuesThread(BufferFreezeSnapshot state) {
            << " facing=" << (state.facingRight ? "right" : "left");
         LogOut(ss.str(), true);
     }
-    uintptr_t initialPlayerPtr = GetPlayerPointer(playerNum);
+    uintptr_t initialPlayerPtr = FreezePlayerPointer(playerNum);
     if (!initialPlayerPtr) {
         LogOut("[INPUT_BUFFER] Invalid player pointer at thread start, aborting", true);
         std::lock_guard<std::recursive_mutex> lock(g_bufferFreezeControlMutex);
@@ -398,8 +482,8 @@ static void FreezeBufferValuesThread(BufferFreezeSnapshot state) {
     }
 
     // Get the move ID address for monitoring move execution
-    uintptr_t base = GetEFZBase();
-    uintptr_t moveIDAddr = ResolvePointer(base, 
+    uintptr_t base = state.scoped?state.world.efzBase:GetEFZBase();
+    uintptr_t moveIDAddr = state.scoped?initialPlayerPtr+MOVE_ID_OFFSET:ResolvePointer(base, 
         (playerNum == 1) ? EFZ_BASE_OFFSET_P1 : EFZ_BASE_OFFSET_P2, 
         MOVE_ID_OFFSET);
     
@@ -429,10 +513,10 @@ static void FreezeBufferValuesThread(BufferFreezeSnapshot state) {
     const int aggressivePhaseFrames = 15;
     for (int i = 0; i < aggressivePhaseFrames &&
                     g_bufferFreezingActive.load(std::memory_order_acquire) &&
-                    OwnsFreezeGeneration(generation); i++) {
+                    OwnsFreezeGeneration(generation) && (!state.scoped || work.IsCurrent()); i++) {
         if (g_onlineModeActive.load()) break;
         // Check player pointer validity
-        uintptr_t playerPtr = GetPlayerPointer(playerNum);
+        uintptr_t playerPtr = FreezePlayerPointer(playerNum);
         if (!playerPtr || playerPtr != initialPlayerPtr) {
             LogOut("[INPUT_BUFFER] Player pointer changed during aggressive phase, aborting", true);
             break;
@@ -440,7 +524,7 @@ static void FreezeBufferValuesThread(BufferFreezeSnapshot state) {
         
         // Check for facing direction changes (cross-up detection)
         if (state.motionType >= 0) {
-            bool currentFacing = GetPlayerFacingDirection(playerNum);
+            bool currentFacing = FreezeFacing(playerNum);
             if (currentFacing != state.facingRight) {
                 if (detailedLogging.load()) {
                     LogOut("[BUFFER_FREEZE][CROSSUP] Facing direction changed: " +
@@ -466,11 +550,11 @@ static void FreezeBufferValuesThread(BufferFreezeSnapshot state) {
                         state.length, INPUT_BUFFER_SIZE - start);
                     const uint16_t len2 = state.length - len1;
                     if (len1 > 0) {
-                        SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + start,
+                        WriteFreezeMemory(playerPtr + INPUT_BUFFER_OFFSET + start,
                                         state.values.data(), len1);
                     }
                     if (len2 > 0) {
-                        SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET,
+                        WriteFreezeMemory(playerPtr + INPUT_BUFFER_OFFSET,
                                         state.values.data() + len1, len2);
                     }
                 }
@@ -479,7 +563,7 @@ static void FreezeBufferValuesThread(BufferFreezeSnapshot state) {
                     if (!SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET,
                                         &curIdx, sizeof(curIdx)) ||
                         curIdx != state.indexValue) {
-                        SafeWriteMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET,
+                        WriteFreezeMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET,
                                         &state.indexValue, sizeof(state.indexValue));
                     }
                 }
@@ -517,23 +601,23 @@ static void FreezeBufferValuesThread(BufferFreezeSnapshot state) {
         }
         
         // Very short sleep for aggressive phase
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        if(WaitForSingleObject(bufferWake,2)==WAIT_FAILED){bufferWorkerFault.store(true);break;}
     }
     
     // NORMAL PHASE: Continue with standard frequency
     int freezeCount = aggressivePhaseFrames;
     while (g_bufferFreezingActive.load(std::memory_order_acquire) &&
-           OwnsFreezeGeneration(generation) &&
+           OwnsFreezeGeneration(generation) && (!state.scoped || work.IsCurrent()) &&
            freezeCount < freezeLimit && !g_isShuttingDown.load()) {
         if (g_onlineModeActive.load()) { LogOut("[INPUT_BUFFER] Online mode active, stopping buffer freeze", true); break; }
         // Check game state and player pointer validity
-        GamePhase currentPhase = GetCurrentGamePhase();
+        GamePhase currentPhase = state.scoped?GamePhase::Match:GetCurrentGamePhase();
         if (currentPhase != GamePhase::Match) {
             LogOut("[INPUT_BUFFER] Game phase changed, stopping buffer freeze", true);
             break;
         }
         
-        uintptr_t currentPlayerPtr = GetPlayerPointer(playerNum);
+        uintptr_t currentPlayerPtr = FreezePlayerPointer(playerNum);
         if (!currentPlayerPtr || currentPlayerPtr != initialPlayerPtr) {
             LogOut("[INPUT_BUFFER] Player pointer changed, stopping buffer freeze", true);
             break;
@@ -541,7 +625,7 @@ static void FreezeBufferValuesThread(BufferFreezeSnapshot state) {
         
         // Check for facing direction changes (cross-up detection)
         if (state.motionType >= 0 && freezeCount % 3 == 0) {
-            bool currentFacing = GetPlayerFacingDirection(playerNum);
+            bool currentFacing = FreezeFacing(playerNum);
             if (currentFacing != state.facingRight) {
                 if (detailedLogging.load()) {
                     LogOut("[BUFFER_FREEZE][CROSSUP] Facing direction changed: " +
@@ -565,11 +649,11 @@ static void FreezeBufferValuesThread(BufferFreezeSnapshot state) {
                         state.length, INPUT_BUFFER_SIZE - start);
                     const uint16_t len2 = state.length - len1;
                     if (len1 > 0) {
-                        SafeWriteMemory(currentPlayerPtr + INPUT_BUFFER_OFFSET + start,
+                        WriteFreezeMemory(currentPlayerPtr + INPUT_BUFFER_OFFSET + start,
                                         state.values.data(), len1);
                     }
                     if (len2 > 0) {
-                        SafeWriteMemory(currentPlayerPtr + INPUT_BUFFER_OFFSET,
+                        WriteFreezeMemory(currentPlayerPtr + INPUT_BUFFER_OFFSET,
                                         state.values.data() + len1, len2);
                     }
                 }
@@ -578,7 +662,7 @@ static void FreezeBufferValuesThread(BufferFreezeSnapshot state) {
                     if (!SafeReadMemory(currentPlayerPtr + INPUT_BUFFER_INDEX_OFFSET,
                                         &curIdx, sizeof(curIdx)) ||
                         curIdx != state.indexValue) {
-                        SafeWriteMemory(currentPlayerPtr + INPUT_BUFFER_INDEX_OFFSET,
+                        WriteFreezeMemory(currentPlayerPtr + INPUT_BUFFER_INDEX_OFFSET,
                                         &state.indexValue, sizeof(state.indexValue));
                     }
                 }
@@ -631,9 +715,10 @@ static void FreezeBufferValuesThread(BufferFreezeSnapshot state) {
         
         freezeCount++;
         // Standard sleep time
-        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+        if(WaitForSingleObject(bufferWake,4)==WAIT_FAILED){bufferWorkerFault.store(true);break;}
     }
     
+    if(state.scoped && !work.IsCurrent())return;
     // Cleanup phase - DO NOT forcibly wipe entire buffer here; just neutralize trailing inputs
     if (detailedLogging.load()) {
         LogOut("[BUFFER_FREEZE] Buffer freeze thread ended (counter=" + std::to_string(freezeCount) + ")", true);
@@ -659,7 +744,7 @@ static void FreezeBufferValuesThread(BufferFreezeSnapshot state) {
             return;
         }
         if (state.length > 0) {
-            uintptr_t playerPtr = GetPlayerPointer(playerNum);
+            uintptr_t playerPtr = FreezePlayerPointer(playerNum);
             if (playerPtr) {
                 const uint16_t start = state.startIndex;
                 const uint16_t len1 = (uint16_t)std::min<uint16_t>(
@@ -668,11 +753,11 @@ static void FreezeBufferValuesThread(BufferFreezeSnapshot state) {
                 std::vector<uint8_t> zeros1(len1, 0x00);
                 std::vector<uint8_t> zeros2(len2, 0x00);
                 if (len1 > 0) {
-                    SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + start,
+                    WriteFreezeMemory(playerPtr + INPUT_BUFFER_OFFSET + start,
                                     zeros1.data(), len1);
                 }
                 if (len2 > 0) {
-                    SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET,
+                    WriteFreezeMemory(playerPtr + INPUT_BUFFER_OFFSET,
                                     zeros2.data(), len2);
                 }
                 uint16_t curIdx = 0;
@@ -682,7 +767,7 @@ static void FreezeBufferValuesThread(BufferFreezeSnapshot state) {
                     const uint16_t w = static_cast<uint16_t>(
                         (curIdx + INPUT_BUFFER_SIZE - n) % INPUT_BUFFER_SIZE);
                     const uint8_t neutral = 0;
-                    SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + w,
+                    WriteFreezeMemory(playerPtr + INPUT_BUFFER_OFFSET + w,
                                     &neutral, sizeof(neutral));
                 }
             }
@@ -699,11 +784,27 @@ static void FreezeBufferValuesThread(BufferFreezeSnapshot state) {
     }
 }
 
+namespace {
+DWORD WINAPI BufferThreadMain(void* payload) {
+    std::unique_ptr<BufferFreezeSnapshot> state(static_cast<BufferFreezeSnapshot*>(payload));
+    try {FreezeBufferValuesThread(std::move(*state));}catch(...) {bufferWorkerFault.store(true,std::memory_order_release);}
+    state.reset();
+    Practice::NotifyRetirementProgress();
+    return 0;
+}
+}
 uint64_t StartBufferFreezeWorker(int playerNum) {
     std::lock_guard<std::recursive_mutex> lock(g_bufferFreezeControlMutex);
-    if (g_onlineModeActive.load(std::memory_order_acquire)) return 0;
-
+    if (g_onlineModeActive.load(std::memory_order_acquire) || bufferWorkClosed.load(std::memory_order_acquire)) return 0;
+    auto admission=bufferWorldBound?Practice::TryEnterMonitorWork():Practice::WorkLease{};
+    if(bufferWorldBound && (!admission || !SameBufferWorld(admission.Context(),bufferWorld)))return 0;
+    (void)ReapBufferThreads();
+    if(bufferWorkerFault.load())return 0;
+    if(!bufferWake)bufferWake=CreateEventA(nullptr,TRUE,FALSE,nullptr);
+    if(!bufferWake){bufferWorkerFault.store(true);return 0;}
+    ResetEvent(bufferWake);
     BufferFreezeSnapshot state;
+    state.scoped=bufferWorldBound;state.world=bufferWorld;
     state.generation = NextFreezeGeneration();
     state.playerNum = playerNum;
     state.values = g_frozenBufferValues;
@@ -720,16 +821,26 @@ uint64_t StartBufferFreezeWorker(int playerNum) {
     g_activeFreezePlayer.store(playerNum, std::memory_order_release);
     g_bufferFreezingActive.store(true, std::memory_order_release);
 
-    g_bufferFreezeThread = std::thread(
-        [state]() mutable { FreezeBufferValuesThread(std::move(state)); });
-    g_bufferFreezeThread.detach();
-    return state.generation;
+    auto payload=std::make_unique<BufferFreezeSnapshot>(std::move(state));
+    bufferThreads.emplace_back(); // Allocate durable ownership before launch.
+    auto& record=bufferThreads.back();
+    if(!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,reinterpret_cast<LPCSTR>(&BufferThreadMain),&record.module)) {
+        bufferThreads.pop_back();bufferWorkerFault.store(true);return 0;
+    }
+    record.thread=CreateThread(nullptr,0,BufferThreadMain,payload.get(),0,nullptr);
+    if(!record.thread) {
+        FreeLibrary(record.module);bufferThreads.pop_back();bufferWorkerFault.store(true);return 0;
+    }
+    payload.release();
+    return g_bufferFreezeGeneration.load(std::memory_order_acquire);
 }
 
 // Capture current buffer section and begin freezing it
 bool CaptureAndFreezeBuffer(int playerNum, uint16_t startIndex, uint16_t length, int motionType, int buttonMask) {
     std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
     std::unique_lock<std::recursive_mutex> controlLock(g_bufferFreezeControlMutex);
+    auto work=bufferWorldBound?Practice::TryEnterMonitorWork():Practice::WorkLease{};
+    if(bufferWorldBound && (!work || !SameBufferWorld(work.Context(),bufferWorld) || bufferWorkClosed.load()))return false;
     if (TutorialBufferFreezeLeaseActive()) return false;
     // CRITICAL: Never run during online mode
     if (g_onlineModeActive.load()) return false;
@@ -740,9 +851,9 @@ bool CaptureAndFreezeBuffer(int playerNum, uint16_t startIndex, uint16_t length,
     // Store motion info for potential pattern regeneration
     g_frozenMotionType = motionType;
     g_frozenButtonMask = buttonMask;
-    g_lastKnownFacing = GetPlayerFacingDirection(playerNum);
+    g_lastKnownFacing = FreezeFacing(playerNum);
     
-    uintptr_t playerPtr = GetPlayerPointer(playerNum);
+    uintptr_t playerPtr = FreezePlayerPointer(playerNum);
     if (!playerPtr) {
         LogOut("[INPUT_BUFFER] Cannot get player pointer", true);
         return false;
@@ -821,8 +932,9 @@ bool CaptureAndFreezeBuffer(int playerNum, uint16_t startIndex, uint16_t length,
             StopBufferFreezingIgnoringTutorialLease();
             return false;
         }
+        if(bufferWorldBound && !work.IsCurrent())return false;
         waitIterations++;
-        std::this_thread::sleep_for(std::chrono::microseconds(100));
+        if(WaitForSingleObject(bufferWake,1)==WAIT_FAILED)return false;
     }
     
     if (detailedLogging.load() && waitIterations > 0) {
@@ -841,9 +953,11 @@ bool CaptureAndFreezeBuffer(int playerNum, uint16_t startIndex, uint16_t length,
 bool FreezeBufferIndex(int playerNum, uint16_t indexValue) {
     std::lock_guard<std::recursive_mutex> p2ControlLock(g_p2ControlMutex);
     std::lock_guard<std::recursive_mutex> controlLock(g_bufferFreezeControlMutex);
+    auto work=bufferWorldBound?Practice::TryEnterMonitorWork():Practice::WorkLease{};
+    if(bufferWorldBound && (!work || !SameBufferWorld(work.Context(),bufferWorld) || bufferWorkClosed.load()))return false;
     if (TutorialBufferFreezeLeaseActive()) return false;
     if (g_onlineModeActive.load(std::memory_order_acquire)) return false;
-    uintptr_t playerPtr = GetPlayerPointer(playerNum);
+    uintptr_t playerPtr = FreezePlayerPointer(playerNum);
     if (!playerPtr) {
         LogOut("[INPUT_BUFFER] Cannot get player pointer", true);
         return false;
@@ -866,6 +980,7 @@ void StopBufferFreezingIgnoringTutorialLease() {
         // Invalidate first. A detached predecessor will observe the generation
         // change and skip both further writes and cleanup.
         (void)NextFreezeGeneration();
+        if(bufferWake)SetEvent(bufferWake);
         g_bufferFreezingActive.store(false, std::memory_order_release);
         g_indexFreezingActive.store(false, std::memory_order_release);
         g_freezeInitializedGeneration.store(0, std::memory_order_release);
@@ -886,14 +1001,14 @@ void StopBufferFreezingIgnoringTutorialLease() {
 
     // Wait briefly for thread to wind down (keep minimal to avoid frame hitch)
     auto tWaitStart = clock::now();
-    std::this_thread::sleep_for(std::chrono::milliseconds(8));
+    (void)ReapBufferThreads();
     auto tWaitEnd = clock::now();
         
         // Neutralize only the buffer owned by this freeze. Clearing both
         // players made every tutorial P2 special erase P1's recent inputs.
         auto tCleanStart = clock::now();
         if (owner == 1 || owner == 2) {
-            uintptr_t playerPtr = GetPlayerPointer(owner);
+            uintptr_t playerPtr = FreezePlayerPointer(owner);
             if (playerPtr) {
                 uint16_t currentIndex = 0;
                 if (SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET,
@@ -904,7 +1019,7 @@ void StopBufferFreezingIgnoringTutorialLease() {
                         w %= static_cast<int>(INPUT_BUFFER_SIZE);
                         if (w < 0) w += static_cast<int>(INPUT_BUFFER_SIZE);
                         const uint16_t writeIndex = static_cast<uint16_t>(w);
-                        SafeWriteMemory(playerPtr + INPUT_BUFFER_OFFSET + writeIndex,
+                        WriteFreezeMemory(playerPtr + INPUT_BUFFER_OFFSET + writeIndex,
                                         &neutral, sizeof(neutral));
                     }
                 }
@@ -930,4 +1045,64 @@ void StopBufferFreezing() {
         return;
     }
     StopBufferFreezingIgnoringTutorialLease();
+}
+
+
+bool BindBufferFreezeWorld(const EfzTmEntryV1& world) {
+    std::lock_guard<std::recursive_mutex> lock(g_bufferFreezeControlMutex);
+    if(world.size!=sizeof(world) || world.abiVersion!=EFZ_TM_LIFECYCLE_ABI || !world.id.battleWorld ||
+       !world.id.timeline || !world.player1 || !world.player2 || world.nativeThreadId!=GetCurrentThreadId())return false;
+    if(bufferWorldBound)return SameBufferWorld(bufferWorld,world) && !bufferWorkClosed.load();
+    if(!ReapBufferThreads() || g_bufferFreezingActive.load() || bufferWorkerFault.load())return false;
+    bufferWorld=world;bufferWorldBound=true;bufferWorkClosed.store(false,std::memory_order_release);
+    return true;
+}
+void CancelBufferFreezeWork() {
+    std::lock_guard<std::recursive_mutex> lock(g_bufferFreezeControlMutex);
+    if(!bufferWorldBound)return;
+    bufferWorkClosed.store(true,std::memory_order_release);
+    (void)NextFreezeGeneration();
+    g_bufferFreezingActive.store(false,std::memory_order_release);
+    g_indexFreezingActive.store(false,std::memory_order_release);
+    g_freezeInitializedGeneration.store(0,std::memory_order_release);
+    if(bufferWake)SetEvent(bufferWake);
+}
+uint32_t RetireBufferFreezeWorld(const EfzTmEntryV1& heldWorld) {
+    std::lock_guard<std::recursive_mutex> lock(g_bufferFreezeControlMutex);
+    if(bufferWorkerFault.load())return EFZ_TM_FAULTED;
+    if(!bufferWorldBound)return bufferThreads.empty()?EFZ_TM_READY:EFZ_TM_PENDING;
+    if(!SameBufferWorld(bufferWorld,heldWorld) || heldWorld.nativeThreadId!=GetCurrentThreadId())return EFZ_TM_FAULTED;
+    if(!bufferWorkClosed.load())return EFZ_TM_PENDING;
+    // The lifecycle owner calls after the shared WorkDomain drains. A scoped
+    // worker has released this mutex and all native memory before its lease;
+    // only its wrapper notification/CRT exit remains, so joining cannot wait
+    // for a lock held here. Legacy workers are excluded by Bind above.
+    if(!ReapBufferThreads(true))return bufferWorkerFault.load()?EFZ_TM_FAULTED:EFZ_TM_PENDING;
+    bool restored=true;
+    for(int player=0;player<2;++player) {
+        auto& record=bufferWrites[player];
+        const uintptr_t base=player?heldWorld.player2:heldWorld.player1;
+        for(size_t index=0;index<INPUT_BUFFER_SIZE;++index)if(record.owned[index]) {
+            uint8_t current=0;
+            const uintptr_t address=base+INPUT_BUFFER_OFFSET+index;
+            if(!SafeReadMemory(address,&current,1)){restored=false;continue;}
+            // Preserve a later native/owner write. Only this producer's last
+            // attributed value permits returning its recorded preimage.
+            if(current==record.last[index] && !CopyBufferData(address,&record.before[index],1)){restored=false;continue;}
+            record.owned[index]=false;
+        }
+        if(record.indexOwned) {
+            uint16_t current=0;
+            const uintptr_t address=base+INPUT_BUFFER_INDEX_OFFSET;
+            if(!SafeReadMemory(address,&current,sizeof(current)) ||
+               (current==record.indexLast && !CopyBufferData(address,&record.indexBefore,sizeof(current))))restored=false;
+            else record.indexOwned=false;
+        }
+    }
+    if(!restored)return EFZ_TM_PENDING;
+    if(bufferWake && !CloseHandle(bufferWake))return EFZ_TM_PENDING;
+    bufferWake=nullptr;bufferWorldBound=false;bufferWorld={};
+    bufferWrites[0]={};bufferWrites[1]={};
+    g_activeFreezePlayer.store(0);g_frozenBufferValues.clear();g_frozenBufferLength=0;
+    return bufferWorkerFault.load()?EFZ_TM_FAULTED:EFZ_TM_READY;
 }

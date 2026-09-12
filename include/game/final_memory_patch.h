@@ -1,14 +1,14 @@
 #pragma once
 
 // Applies a runtime patch to bypass the low-HP requirement for Final Memory (FM).
-// It scans the .text section for comparisons of [this+0x108] (HP) against 3333 and
-// rewrites the immediate to 10000 so the HP check is always satisfied.
+// Uses hash-qualified complete CMP descriptors for [this+0x108] (HP) against
+// 3333 and owns the immediate change to 10000 through the patch ledger.
 // Returns the number of patched sites.
 int ApplyFinalMemoryHPBypass();
 
 // Reverts the FM HP bypass by restoring all known patched sites to 3333.
-// Returns the number of sites reverted. If no tracked sites exist, may perform
-// a conservative scan to find matching compares set to 10000 and restore them.
+// Returns the number of acquired sites fully restored. Empty restoration does
+// no discovery/write; failed obligations remain recorded for another attempt.
 int RevertFinalMemoryHPBypass();
 
 // Convenience: enable/disable the FM bypass in one call. Returns number of
@@ -20,7 +20,7 @@ int SetFinalMemoryBypass(bool enabled);
 // Returns whether the FM bypass is requested by the local training UI/runtime.
 bool IsFinalMemoryBypassEnabled();
 
-// Returns whether the FM bypass code patch is currently installed in efz.exe.
+// Returns whether this owner has an installed patch or unresolved restoration.
 bool IsFinalMemoryBypassInstalled();
 
 // Reconcile the live code patch with the current requested state and runtime

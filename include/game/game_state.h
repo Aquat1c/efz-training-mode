@@ -24,8 +24,8 @@ bool IsInGameplayState();
 bool IsInCharacterSelectScreen();
 
 // True only where it is safe and meaningful to open a mod-owned modal surface:
-// the undebounced screen byte is the battle screen, the mode passes the user's
-// RESTRICT TO PRACTICE setting, both fighters exist, and no netplay session is
+// the undebounced screen byte is the battle screen, the mode is Practice,
+// both fighters exist, and no netplay session is
 // live. Deliberately built on the raw screen byte rather than
 // GetCurrentGamePhase(): the phase query lags by up to three calls and is not
 // side-effect free, so polling it from the hotkey thread would perturb the
@@ -55,6 +55,8 @@ uint32_t GetCompletedBattleUpdateBatch();
 
 bool CanRequestFrontendExit(FrontendExitTarget target);
 bool RequestFrontendExit(FrontendExitTarget target);
+// Native battle-entry consumer: validates and writes only the queued allocation.
+bool RequestBattleFrontendExit(FrontendExitTarget target,uintptr_t battleContext,uintptr_t gameSystem);
 
 // Enum to represent the different game phases
 enum class GamePhase : uint8_t {
@@ -71,3 +73,6 @@ GamePhase GetCurrentGamePhase();
 // Fast inline helper
 inline bool IsMatchPhase() { return GetCurrentGamePhase() == GamePhase::Match; }
 void LogPhaseIfChanged();
+
+// Consumes the existing one-shot Title/Loading route after normal or retained cleanup.
+uint8_t ConsumeBattleFrontendResult(uint8_t nativeResult,bool cleanupHeld,uintptr_t heldGameSystem);

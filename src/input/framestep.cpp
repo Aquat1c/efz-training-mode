@@ -11,6 +11,7 @@
 #include "../../include/utils/debug_log.h"
 #include "../../include/gui/overlay.h"
 #include "../../include/gui/imgui_impl.h"
+#include "../../include/runtime/native_game_profile.h"
 #include <windows.h>
 #include <atomic>
 #include <sstream>
@@ -55,8 +56,8 @@ namespace {
         DebugLog::Write(message);
     }
 
-    constexpr uintptr_t kBattleGamespeedOffset = 1400;
-    constexpr uintptr_t kBattleEnginePauseOffset = 1416;
+    constexpr uintptr_t kBattleGamespeedOffset = 0x578; // one byte
+    constexpr uintptr_t kBattleEnginePauseOffset = 0x588; // four bytes
 
     enum class Backend {
         Disabled,
@@ -284,39 +285,17 @@ namespace {
 
     // Get gamespeed address (from captured battle context or efz.exe GameMode array)
     uintptr_t GetGamespeedAddress() {
-        uintptr_t lastBattle = s_lastBattleContext.load();
-        uint8_t probe = 0xFF;
-        if (ReadBattleGamespeed(lastBattle, probe) && probe <= 3) {
-            return lastBattle + kBattleGamespeedOffset;
-        }
-
-        uintptr_t efzBase = GetEFZBase();
-        if (!efzBase) return 0;
-
-        constexpr uintptr_t RVA_GameModeArray = 0x00390110;
-        
-        struct Path { int slot; uintptr_t offset; };
-        const Path paths[] = {
-            { 3, 0x0578 },
-            { 1, 0x0F20 },
-            { 2, 0x09B8 },
-        };
-
-        for (const auto& path : paths) {
-            uintptr_t slotAddr = efzBase + RVA_GameModeArray + 4u * static_cast<uintptr_t>(path.slot);
-            uintptr_t basePtr = 0;
-            if (!SafeReadMemory(slotAddr, &basePtr, sizeof(basePtr)) || !basePtr) {
-                continue;
-            }
-
-            uintptr_t addr = basePtr + path.offset;
-            probe = 0xFF;
-            if (SafeReadMemory(addr, &probe, sizeof(probe)) && probe <= 3) {
-                return addr;
-            }
-        }
-
-        return 0;
+        Practice::PatchModule image;
+        if (!Practice::GetQualifiedMemorialImage(image)) return 0;
+        uint8_t screen = 0;
+        uintptr_t battle = 0;
+        if (!SafeReadMemory(image.base + 0x390148, &screen, sizeof(screen)) || screen != 3 ||
+            !SafeReadMemory(image.base + 0x39011c, &battle, sizeof(battle)) || !battle) return 0;
+        const uintptr_t captured = s_lastBattleContext.load();
+        if (captured && captured != battle) return 0;
+        uint8_t speed = 0xff;
+        return ReadBattleGamespeed(battle, speed) && speed <= 3
+            ? battle + kBattleGamespeedOffset : 0;
     }
 
     // Set gamespeed (0 = paused, 3 = normal)

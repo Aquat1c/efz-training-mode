@@ -17,13 +17,13 @@ namespace {
 
     bool MenuVisible() { return g_menuVisible.load(std::memory_order_relaxed); }
 
-    template<typename T> bool MakeHook(void* target, void* detour, T** original) {
+    template<typename T> bool MakeHook(void* target, void* detour, T** original, PracticeHooks::CallbackTicket& ticket) {
         if (!target) return false;
         return MinHookUtils::CreateAndEnableHook(target,
                                                  detour,
                                                  reinterpret_cast<void**>(original),
                                                  "[HOTKEY]",
-                                                 "practice overlay gate");
+                                                 "practice overlay gate", nullptr, nullptr, &ticket);
     }
 
     using ToggleFn = void(__thiscall*)(void* self);
@@ -31,9 +31,21 @@ namespace {
     static ToggleFn oToggleHit  = nullptr;
     static ToggleFn oToggleDisp = nullptr; // We intentionally do NOT hook pause here; pause gating handled in pause_integration.
 
-    void __stdcall HookedToggleHurt(void* self) { if (MenuVisible()) return; if (oToggleHurt) oToggleHurt(self); }
-    void __stdcall HookedToggleHit (void* self) { if (MenuVisible()) return; if (oToggleHit)  oToggleHit(self); }
-    void __stdcall HookedToggleDisp(void* self) { if (MenuVisible()) return; if (oToggleDisp) oToggleDisp(self); }
+    void __stdcall HookedToggleHurt(void* self) {
+        auto execution=MinHookUtils::EnterExecution(MinHookUtils::TicketFor<&HookedToggleHurt>());
+        if (execution.Admitted() && MenuVisible()) return;
+        if (oToggleHurt) oToggleHurt(self);
+    }
+    void __stdcall HookedToggleHit(void* self) {
+        auto execution=MinHookUtils::EnterExecution(MinHookUtils::TicketFor<&HookedToggleHit>());
+        if (execution.Admitted() && MenuVisible()) return;
+        if (oToggleHit) oToggleHit(self);
+    }
+    void __stdcall HookedToggleDisp(void* self) {
+        auto execution=MinHookUtils::EnterExecution(MinHookUtils::TicketFor<&HookedToggleDisp>());
+        if (execution.Admitted() && MenuVisible()) return;
+        if (oToggleDisp) oToggleDisp(self);
+    }
 
     void InstallOverlayHooksInternal() {
         if (g_overlayHooksInstalled.load()) return;
@@ -72,9 +84,9 @@ namespace {
         }
         
         int installed = 0;
-        if (MakeHook(reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(hRev)+hurtRva), &HookedToggleHurt, &oToggleHurt)) { ++installed; }
-        if (MakeHook(reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(hRev)+hitRva), &HookedToggleHit, &oToggleHit)) { ++installed; }
-        if (MakeHook(reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(hRev)+dispRva), &HookedToggleDisp, &oToggleDisp)) { ++installed; }
+        if (MakeHook(reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(hRev)+hurtRva), &HookedToggleHurt, &oToggleHurt, MinHookUtils::TicketFor<&HookedToggleHurt>())) { ++installed; }
+        if (MakeHook(reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(hRev)+hitRva), &HookedToggleHit, &oToggleHit, MinHookUtils::TicketFor<&HookedToggleHit>())) { ++installed; }
+        if (MakeHook(reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(hRev)+dispRva), &HookedToggleDisp, &oToggleDisp, MinHookUtils::TicketFor<&HookedToggleDisp>())) { ++installed; }
         // Pause toggle NOT hooked here; suppression handled via pause_integration's hook with internal bypass.
         if (installed) {
             g_overlayHooksInstalled.store(true);

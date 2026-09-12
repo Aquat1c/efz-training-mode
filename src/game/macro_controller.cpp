@@ -18,6 +18,8 @@
 #include "../include/game/practice_offsets.h"
 #include "../include/utils/utilities.h"   // GetEFZBase, IsEFZWindowActive, etc.
 #include "../include/game/frame_monitor.h" // AreCharactersInitialized()
+#include "../include/runtime/practice_runtime.h"
+#include "../include/runtime/practice_session.h"
 #include <vector>
 #include <atomic>
 #include <sstream>
@@ -25,6 +27,7 @@
 #include <cctype>
 #include <algorithm>
 #include <mutex>
+#include <cassert>
 
 // Forward decls in case headers aren't visible due to include order in some TU configs
 extern uintptr_t GetEFZBase();
@@ -70,6 +73,34 @@ namespace {
     constexpr int kBannerX = 20;
     constexpr int kBannerY = 160;
     std::atomic<MacroController::State> s_state{ MacroController::State::Idle };
+    EfzTmEntryV1 s_boundWorld{}; // protected by the input/control barrier
+    bool s_scopeRequired = false;
+    std::atomic<bool> s_practiceWorkClosed{false};
+    uintptr_t s_activePlayer = 0; // captured on admission, never a last-player hint
+
+    bool SameMacroWorld(const EfzTmEntryV1& a, const EfzTmEntryV1& b) {
+        return a.id.providerIncarnation == b.id.providerIncarnation &&
+            a.id.practiceSession == b.id.practiceSession &&
+            a.id.battleWorld == b.id.battleWorld && a.id.timeline == b.id.timeline &&
+            a.gameSystem == b.gameSystem && a.battleContext == b.battleContext &&
+            a.player1 == b.player1 && a.player2 == b.player2 &&
+            a.nativeThreadId == b.nativeThreadId;
+    }
+    class MacroWork {
+        Practice::WorkLease lease_;
+        bool admitted_;
+    public:
+        MacroWork() : admitted_(!s_scopeRequired) {
+            if (!s_scopeRequired || s_practiceWorkClosed.load(std::memory_order_acquire)) return;
+            lease_ = Practice::TryEnterMonitorWork();
+            admitted_ = lease_ && SameMacroWorld(lease_.Context(), s_boundWorld);
+        }
+        explicit operator bool() const { return admitted_; }
+    };
+    uintptr_t MacroPlayerPointer(int player) {
+        if (!s_scopeRequired) return GetPlayerPointer(player);
+        return player == 1 ? s_boundWorld.player1 : player == 2 ? s_boundWorld.player2 : 0;
+    }
     std::atomic<bool> s_recordingCaptureSuspended{false};
     Slot s_slots[kMaxSlots];
     Slot s_transientPlaybackSlot; // mission demos never overwrite a user slot
@@ -165,6 +196,10 @@ namespace {
     // Diagnostics: detect abnormal cycle lengths (should always be 3 calls between div0 events if Tick called once per internal frame)
     static int s_callsSinceDiv0 = 0;
     static bool s_firstDiv0Seen = false;
+    struct FreezeObservation {
+        bool initialized = false;
+        bool lastFrozen = false;
+    } s_freezeObservation;
 
     // Gating constants for heavy diagnostics
     constexpr bool kEnableFullBufferSnapshots = false; // set false if memory/log size becomes an issue
@@ -185,8 +220,10 @@ namespace {
         bool speedFrozen = PauseIntegration::IsGameSpeedFrozen();
         bool frozen = phaseFrozen || pauseFlag || speedFrozen;
         // One-shot transition log (helps verify correctness without log spam)
-        static bool s_lastFrozen = frozen;
-        if (frozen != s_lastFrozen) {
+        if (!s_freezeObservation.initialized) {
+            s_freezeObservation = {true, frozen};
+        }
+        if (frozen != s_freezeObservation.lastFrozen) {
             std::ostringstream oss;
             oss << "[MACRO][FRZ] " << (frozen ? "ENTER" : "EXIT")
                 << " freeze phase=" << (int)phase
@@ -194,7 +231,7 @@ namespace {
                 << " practicePause=" << (pauseFlag?1:0)
                 << " gamespeedFrozen=" << (speedFrozen?1:0);
             LogOut(oss.str(), true);
-            s_lastFrozen = frozen;
+            s_freezeObservation.lastFrozen = frozen;
         }
         return frozen;
     }
@@ -413,7 +450,7 @@ namespace {
     }
 
     static int ReadFacingSign(int playerNum) {
-        uintptr_t pPtr = GetPlayerPointer(playerNum);
+        uintptr_t pPtr = MacroPlayerPointer(playerNum);
         if (!pPtr) return 0;
         uint8_t raw = 0;
         if (!SafeReadMemory(pPtr + FACING_DIRECTION_OFFSET, &raw, sizeof(raw))) return 0;
@@ -436,7 +473,7 @@ namespace {
     // Diagnostic: dump a tail of the selected player's input buffer and current index.
     void LogPlayerBufferSnapshot(int playerNum, const char* label, int tail = 16) {
         const int player = ClampPlayer(playerNum);
-        uintptr_t playerPtr = GetPlayerPointer(player);
+        uintptr_t playerPtr = MacroPlayerPointer(player);
         if (!playerPtr) { LogOut(std::string("[MACRO][BUF] ") + label + ": P" + std::to_string(player) + " ptr null", true); return; }
         uint16_t idx = 0;
         if (!SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &idx, sizeof(idx))) {
@@ -462,7 +499,7 @@ namespace {
     // Diagnostic: read and log the selected player's immediate registers.
     void LogPlayerImmediateSnapshot(int playerNum, const char* label) {
         const int player = ClampPlayer(playerNum);
-        uintptr_t playerPtr = GetPlayerPointer(player);
+        uintptr_t playerPtr = MacroPlayerPointer(player);
         if (!playerPtr) { LogOut(std::string("[MACRO][IMM] ") + label + ": P" + std::to_string(player) + " ptr null", true); return; }
         uint8_t h=0, v=0, a=0, b=0, c=0, d=0;
         SafeReadMemory(playerPtr + INPUT_HORIZONTAL_OFFSET, &h, sizeof(h));
@@ -675,7 +712,7 @@ namespace {
     }
 
     void FinishRecording(bool captureUnobservedTail = true,
-                         Slot* sealedCopy = nullptr) {
+                         Slot* sealedCopy = nullptr, bool retiring = false) {
         std::unique_lock<std::mutex> recordLock(s_recordMutex);
         if (s_state.load(std::memory_order_acquire) != MacroController::State::Recording
             || s_recordFinalizing) {
@@ -698,7 +735,7 @@ namespace {
         }
         // Capture any remaining buffer entries up to current index at finish (diagnostic stream for engine buffer)
         const int recordPlayer = ClampPlayer(s_recordPlayer.load(std::memory_order_acquire));
-        uintptr_t playerPtr = GetPlayerPointer(recordPlayer);
+        uintptr_t playerPtr = retiring ? 0 : MacroPlayerPointer(recordPlayer);
         uint16_t endIdx = 0;
         if (captureUnobservedTail && playerPtr &&
             SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &endIdx, sizeof(endIdx))) {
@@ -745,8 +782,10 @@ namespace {
         recordLock.unlock();
 
         // Snapshot the selected player's buffer and immediate registers at end.
-        LogPlayerBufferSnapshot(recordPlayer, "end");
-        LogPlayerImmediateSnapshot(recordPlayer, "end");
+        if (!retiring) {
+            LogPlayerBufferSnapshot(recordPlayer, "end");
+            LogPlayerImmediateSnapshot(recordPlayer, "end");
+        }
       // Summary
         const int slotNum = s_useTransientRecording.load(std::memory_order_acquire) ? 0 : s_curSlot.load();
         int totalTicks = 0; for (auto &sp : recordSlot.spans) totalTicks += sp.ticks;
@@ -794,11 +833,11 @@ namespace {
         // Every P2 recording owns the character-level controller even when the
         // caller did not request a local-side swap.  Restore that ownership
         // independently from the Practice binding swap.
-        if (recordPlayer == 2 && s_recordOwnsP2Control &&
+        if (!retiring && recordPlayer == 2 && s_recordOwnsP2Control &&
             g_p2ControlOverridden.load(std::memory_order_acquire)) {
             RestoreP2ControlState();
         }
-        if (recordPlayer == 2 && s_recordSwitchesLocalControl) {
+        if (!retiring && recordPlayer == 2 && s_recordSwitchesLocalControl) {
             // Return the human to the side they started recording on, not
             // unconditionally to P1 (a swapped player was being un-swapped here).
             // SetLocalSide updates the swap flag itself (SetSwapFlagForLocalSide),
@@ -806,13 +845,15 @@ namespace {
             const int prev = s_prevLocalSide.load();
             SwitchPlayers::SetLocalSide((prev == 0 || prev == 1) ? prev : 0);
         }
-        s_recordOwnsP2Control = false;
-        s_recordSwitchesLocalControl = false;
-        s_prevLocalSide.store(-1);
+        if (!retiring) {
+            s_recordOwnsP2Control = false;
+            s_recordSwitchesLocalControl = false;
+            s_prevLocalSide.store(-1);
+        }
         LogOut("[MACRO][REC] post-finish: P" + std::to_string(recordPlayer) + " capture released", true);
         // Remove persistent banner
-        if (s_macroBannerId != -1) { DirectDrawHook::RemovePermanentMessage(s_macroBannerId); s_macroBannerId = -1; }
-        if (!embeddedMissionCapture) {
+        if (!retiring && s_macroBannerId != -1) { DirectDrawHook::RemovePermanentMessage(s_macroBannerId); s_macroBannerId = -1; }
+        if (!retiring && !embeddedMissionCapture) {
             DirectDrawHook::AddMessage("Macro: Recording stopped", "MACRO",
                                        RGB(255,220,120), 1200, 0, 120);
         }
@@ -830,7 +871,7 @@ namespace {
 
     uint8_t ReadRecordSourceMask(int playerNum) {
         // Build a unified mask from the selected player's immediate registers.
-        uintptr_t playerPtr = GetPlayerPointer(ClampPlayer(playerNum));
+        uintptr_t playerPtr = MacroPlayerPointer(ClampPlayer(playerNum));
         if (!playerPtr) return 0;
         uint8_t h=0, v=0, a=0, b=0, c=0, d=0;
         SafeReadMemory(playerPtr + INPUT_HORIZONTAL_OFFSET, &h, sizeof(h));
@@ -851,7 +892,7 @@ namespace {
 
     // Read the most recently written input-buffer value for the selected player.
     uint8_t ReadBufferLatestMask(int playerNum) {
-        uintptr_t playerPtr = GetPlayerPointer(ClampPlayer(playerNum));
+        uintptr_t playerPtr = MacroPlayerPointer(ClampPlayer(playerNum));
         if (!playerPtr) return 0;
         uint16_t idx = 0;
         if (!SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &idx, sizeof(idx))) return 0;
@@ -877,6 +918,8 @@ void Tick() {
     // netplay publication cannot occur in the middle of a macro tick (notably
     // while playback restores a full 180-byte ring snapshot).
     std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    MacroWork work;
+    if (!work) return;
     if (g_onlineModeActive.load(std::memory_order_acquire)) return;
     if (s_state.load(std::memory_order_acquire) != State::Recording &&
         s_state.load(std::memory_order_acquire) != State::Replaying) {
@@ -926,7 +969,7 @@ void Tick() {
         // Probe current buffer index once up front to decide whether to progress while frozen
         uint16_t idxProbe = 0; bool haveIdx = false; bool bufAdvanced = false;
         {
-            uintptr_t playerPtrProbe = GetPlayerPointer(recordPlayer);
+            uintptr_t playerPtrProbe = MacroPlayerPointer(recordPlayer);
             if (playerPtrProbe && SafeReadMemory(playerPtrProbe + INPUT_BUFFER_INDEX_OFFSET, &idxProbe, sizeof(idxProbe))) {
                 haveIdx = true;
                 if (s_recPrevBufIdx >= 0 && (uint16_t)s_recPrevBufIdx != idxProbe) bufAdvanced = true;
@@ -973,7 +1016,7 @@ void Tick() {
         uint8_t latestBufValPreSynth = ReadBufferLatestMask(recordPlayer);
         // Capture all new buffer entries since last tick
         {
-            uintptr_t playerPtr = GetPlayerPointer(recordPlayer);
+            uintptr_t playerPtr = MacroPlayerPointer(recordPlayer);
             uint16_t idx = 0;
             if (playerPtr && SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &idx, sizeof(idx)) && s_recPrevBufIdx >= 0) {
                 size_t beforeSize = recordSlot.bufStream.size();
@@ -1033,7 +1076,7 @@ void Tick() {
             recordSlot.immPerTick.push_back(immMaskRaw);
             recordSlot.bufLatestPerTick.push_back(latestBufValPreSynth);
             if (kEnableFullBufferSnapshots) {
-                uintptr_t playerPtrSnap = GetPlayerPointer(recordPlayer);
+                uintptr_t playerPtrSnap = MacroPlayerPointer(recordPlayer);
                 std::vector<uint8_t> snap;
                 if (playerPtrSnap) {
                     snap.resize(INPUT_BUFFER_SIZE, 0);
@@ -1272,7 +1315,7 @@ void Tick() {
             // This is simpler and more robust than trying to match recorded indices with offsets
             
             // Read the target player's buffer index.
-            uintptr_t playerPtr = GetPlayerPointer(playPlayer);
+            uintptr_t playerPtr = MacroPlayerPointer(playPlayer);
             uint16_t curBufIdx = 0;
             bool haveIdx = playerPtr && SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &curBufIdx, sizeof(curBufIdx));
             
@@ -1613,6 +1656,8 @@ bool AcquireP2MacroControlOwnership(const char* operation) {
 
 bool BeginPlayerRecording(int playerNum, bool switchLocalControl) {
     std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    MacroWork work;
+    if (!work) return false;
     if (g_onlineModeActive.load(std::memory_order_acquire)) return false;
     if (GetCurrentGamePhase() != GamePhase::Match || !AreCharactersInitialized()) {
         DirectDrawHook::AddMessage("Macro controls available only during Match", "MACRO", RGB(255, 180, 120), 900, 0, 120);
@@ -1626,6 +1671,7 @@ bool BeginPlayerRecording(int playerNum, bool switchLocalControl) {
         return false;
     }
 
+    s_activePlayer = s_scopeRequired ? MacroPlayerPointer(player) : 0;
     s_recordPlayer.store(player, std::memory_order_release);
     s_recordingCaptureSuspended.store(false, std::memory_order_release);
     s_recordStopRequested.store(false, std::memory_order_release);
@@ -1659,6 +1705,8 @@ bool BeginPlayerRecording(int playerNum, bool switchLocalControl) {
 
 bool StartPlayerRecording() {
     std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    MacroWork work;
+    if (!work) return false;
     if (g_onlineModeActive.load(std::memory_order_acquire)) return false;
     if (s_state.load(std::memory_order_acquire) != State::PreRecord) return false;
     const int player = ClampPlayer(s_recordPlayer.load(std::memory_order_acquire));
@@ -1678,7 +1726,7 @@ bool StartPlayerRecording() {
     s_recordFinalizing = false;
     s_recordingCaptureSuspended.store(false, std::memory_order_release);
 
-    uintptr_t playerPtr = GetPlayerPointer(player);
+    uintptr_t playerPtr = MacroPlayerPointer(player);
     uint16_t startIdx = 0;
     if (playerPtr && SafeReadMemory(playerPtr + INPUT_BUFFER_INDEX_OFFSET, &startIdx, sizeof(startIdx))) {
         recordSlot.bufStartIdx = startIdx;
@@ -1703,6 +1751,8 @@ bool StartPlayerRecording() {
 
 bool FinishPlayerRecording() {
     std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    MacroWork work;
+    if (!work) return false;
     if (g_onlineModeActive.load(std::memory_order_acquire)) {
         Stop();
         return false;
@@ -1714,6 +1764,9 @@ bool FinishPlayerRecording() {
 }
 
 void RequestRecordingStopAtBoundary() {
+    std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    MacroWork work;
+    if (!work) return;
     if (s_state.load(std::memory_order_acquire) == State::Recording) {
         s_recordStopRequested.store(true, std::memory_order_release);
     }
@@ -1736,6 +1789,8 @@ void ToggleRecord() {
 static bool StartPlayback(int playerNum, bool exclusiveInput, int startTick,
                           PlaybackStartMode startMode) {
     std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    MacroWork work;
+    if (!work) return false;
     if (g_onlineModeActive.load(std::memory_order_acquire)) return false;
     if (GetCurrentGamePhase() != GamePhase::Match || !AreCharactersInitialized()) return false;
     if (s_state.load(std::memory_order_acquire) != State::Idle) return false;
@@ -1766,7 +1821,7 @@ static bool StartPlayback(int playerNum, bool exclusiveInput, int startTick,
     uintptr_t primePlayerPtr = 0;
     uint16_t primeBufferIndex = 0;
     if (startDecision.prime) {
-        primePlayerPtr = GetPlayerPointer(player);
+        primePlayerPtr = MacroPlayerPointer(player);
         if (!primePlayerPtr || !SafeReadMemory(
                 primePlayerPtr + INPUT_BUFFER_INDEX_OFFSET,
                 &primeBufferIndex, sizeof(primeBufferIndex))) {
@@ -1797,6 +1852,7 @@ static bool StartPlayback(int playerNum, bool exclusiveInput, int startTick,
             return false;
         }
     }
+    s_activePlayer = s_scopeRequired ? MacroPlayerPointer(player) : 0;
     ResetPlaybackCursor();
     ClearPlaybackLane(player, true);
     s_playPlayer.store(player, std::memory_order_release);
@@ -1962,6 +2018,8 @@ void Stop() {
     // publication it performs the full memory/controller cleanup; afterward it
     // is intentionally bookkeeping-only and cannot write over netplay input.
     std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    MacroWork work;
+    if (!work) return;
     const bool online = g_onlineModeActive.load(std::memory_order_acquire);
     State st = s_state.load();
     if (st == State::Idle) {
@@ -2014,10 +2072,86 @@ void Stop() {
     s_recordSwitchesLocalControl = false;
 }
 
+bool BindPracticeWorld(const EfzTmEntryV1& world) {
+    std::lock_guard<std::recursive_mutex> lock(g_p2ControlMutex);
+    if (s_boundWorld.id.battleWorld) return SameMacroWorld(s_boundWorld, world) &&
+        !s_practiceWorkClosed.load(std::memory_order_acquire);
+    if (world.size != sizeof(world) || world.abiVersion != EFZ_TM_LIFECYCLE_ABI ||
+        !world.id.battleWorld || !world.id.timeline || !world.player1 || !world.player2 ||
+        world.nativeThreadId != GetCurrentThreadId() ||
+        s_state.load() != State::Idle || s_exclusiveReplay.load()) return false;
+    s_boundWorld = world;
+    s_activePlayer = 0;
+    s_scopeRequired = true;
+    s_practiceWorkClosed.store(false, std::memory_order_release);
+    return true;
+}
+
+void CancelPracticeWork() {
+    s_practiceWorkClosed.store(true, std::memory_order_release);
+}
+
+uint32_t RetirePracticeWorld(const EfzTmEntryV1& world) {
+    std::lock_guard<std::recursive_mutex> lock(g_p2ControlMutex);
+    if (!s_boundWorld.id.battleWorld) return s_state.load() == State::Idle &&
+        !s_exclusiveReplay.load() ? EFZ_TM_READY : EFZ_TM_FAULTED;
+    if (!SameMacroWorld(s_boundWorld, world) || world.nativeThreadId != GetCurrentThreadId() ||
+        g_onlineModeActive.load()) return EFZ_TM_FAULTED;
+    if (!s_practiceWorkClosed.load()) return EFZ_TM_PENDING;
+    const State state = s_state.load();
+    const bool replay = state == State::Replaying || s_exclusiveReplay.load();
+    const bool record = state == State::Recording || state == State::PreRecord;
+    const int player = replay ? ClampPlayer(s_playPlayer.load()) : ClampPlayer(s_recordPlayer.load());
+    if ((replay || record) && s_activePlayer != (player == 1 ? world.player1 : world.player2))
+        return EFZ_TM_FAULTED;
+    // Release only this still-active owner. An Idle macro's last player is
+    // deliberately insufficient authority to clear somebody else's input.
+    if (replay || (record && player == 2 && s_recordOwnsP2Control)) {
+        const bool flags = ClearPlayerCommandFlagsAt(s_activePlayer);
+        const bool input = FullCleanupAfterToggleAt(s_activePlayer);
+        if (!flags || !input) return EFZ_TM_PENDING;
+    }
+    if (state == State::Recording) FinishRecording(false, nullptr, true);
+    if (replay) ClearPlaybackLane(player, false);
+    s_state.store(State::Idle, std::memory_order_release);
+    s_exclusiveReplay.store(false, std::memory_order_release);
+    s_recordingCaptureSuspended.store(false, std::memory_order_release);
+    s_recordStopRequested.store(false, std::memory_order_release);
+    ResetPlaybackCursor();
+    s_activePlayer = 0;
+    s_boundWorld = {};
+    // Controller/binding receipts and render cleanup own the remaining saved
+    // side and banner. Measurement reset runs only after those receipts.
+    return EFZ_TM_READY;
+}
+
+void ResetTimeline() {
+    assert(s_state.load(std::memory_order_acquire) == State::Idle);
+    ResetPlaybackCursor();
+    s_recLastMask = 0;
+    s_recSpanTicks = 0;
+    s_recLastBuf = 0;
+    s_recPrevBufIdx = -1;
+    s_recLastFacing = 0;
+    s_recLastReason = '?';
+    s_recordStopRequested.store(false, std::memory_order_release);
+    s_recordTickAdvanced.store(false, std::memory_order_release);
+    s_recordingCaptureSuspended.store(false, std::memory_order_release);
+    s_useTransientPlayback.store(false, std::memory_order_release);
+    s_useTransientRecording.store(false, std::memory_order_release);
+    s_recordFinalizing = false;
+    s_freezeObservation = {};
+    s_recordOwnsP2Control = false;
+    s_recordSwitchesLocalControl = false;
+    s_prevLocalSide.store(-1);
+}
+
 // When exiting during PreRecord/Recording or on menu entry,
 // restore default Practice mapping (unswap + CPU flags) first, then stop.
 void UnswapThenStop() {
     std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    MacroWork work;
+    if (!work) return;
     // Prefer explicit unswap/reset in Practice mode so CS/menus are consistent
     if (!g_onlineModeActive.load(std::memory_order_acquire) &&
         GetCurrentGameMode() == GameMode::Practice) {
@@ -2040,6 +2174,9 @@ bool IsSlotEmpty(int slot) {
 MacroController::State GetState() { return s_state.load(); }
 bool DidAdvanceRecordingTick() { return s_recordTickAdvanced.load(std::memory_order_acquire); }
 void SetRecordingCaptureSuspended(bool suspended) {
+    std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    MacroWork work;
+    if (!work) return;
     const bool previous = s_recordingCaptureSuspended.exchange(
         suspended, std::memory_order_acq_rel);
     if (previous == suspended) return;
@@ -2053,7 +2190,7 @@ void SetRecordingCaptureSuspended(bool suspended) {
         std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
         const int player = ClampPlayer(
             s_recordPlayer.load(std::memory_order_acquire));
-        uintptr_t playerPtr = GetPlayerPointer(player);
+        uintptr_t playerPtr = MacroPlayerPointer(player);
         uint16_t index = 0;
         if (playerPtr && SafeReadMemory(
                 playerPtr + INPUT_BUFFER_INDEX_OFFSET, &index, sizeof(index))) {
@@ -2075,6 +2212,9 @@ bool IsExclusivePlayback() {
 }
 int GetPlaybackPlayer() { return ClampPlayer(s_playPlayer.load(std::memory_order_acquire)); }
 void ReleaseExclusivePlaybackHold() {
+    std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    MacroWork work;
+    if (!work) return;
     if (!s_exclusiveReplay.exchange(false, std::memory_order_acq_rel)) return;
     const int player = ClampPlayer(s_playPlayer.load(std::memory_order_acquire));
     g_pollOverrideMask[player].store(0, std::memory_order_relaxed);
@@ -2278,6 +2418,8 @@ bool FinishPlayerRecordingAndSerialize(std::string& serializedOut,
                                        bool includeBuffers) {
     serializedOut.clear();
     std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
+    MacroWork work;
+    if (!work) return false;
     if (g_onlineModeActive.load(std::memory_order_acquire)) {
         Stop();
         return false;

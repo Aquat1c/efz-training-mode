@@ -109,6 +109,10 @@ void CancelAllAutoActionNormalPulses();
 // barrier. Returns false only when same-world cleanup remains unproven after
 // the bounded retry.
 bool DrainAutoActionNormalPulsesForOwnershipBoundary();
+struct EfzTmEntryV1;
+// Runtime holds this exact old world and has drained ordinary producers.
+// Does not resolve current fighters or discard mismatched restoration tokens.
+uint32_t RetireNativeInputOwners(const EfzTmEntryV1& world);
 
 // Enables or disables the live input detours without destroying their MinHook state.
 void SetInputHookActive(bool active);

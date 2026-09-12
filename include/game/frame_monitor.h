@@ -110,3 +110,6 @@ void ReinitializeOverlays();
 bool AreCharactersInitialized();
 bool IsValidGameMode(GameMode mode);
 void UpdateStatsDisplay();
+
+// Requires closed monitor work and restored input/feature ownership.
+void ResetFrameMonitorTimeline();

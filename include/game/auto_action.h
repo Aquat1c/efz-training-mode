@@ -90,6 +90,9 @@ extern uint32_t g_originalP2ControlFlag;
 extern std::recursive_mutex g_p2ControlMutex;
 
 void RestoreP2ControlState();
+// Native input transactions must be retired first; the caller retains this world.
+struct EfzTmEntryV1;
+uint32_t RetireAutoActionControllers(const EfzTmEntryV1& heldWorld);
 void EnableP2ControlForAutoAction();
 
 // Tutorial dummy input needs exclusive, transactional ownership of P2.  The

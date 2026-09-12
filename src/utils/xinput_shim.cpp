@@ -67,6 +67,9 @@ namespace {
     // formatting, or controller-name lookup may run while this is held.
     std::mutex g_snapshotMutex;
     std::atomic<bool> g_watcherStarted{ false };
+    std::atomic<bool> g_pollingActive{false};
+    std::atomic<uint64_t> g_pollingGeneration{0};
+    void EnsureWatcherStarted();
 
     // ---- Published controller display names (computed on the watcher thread) ----
     // The game thread reads these with a brief try_lock; if contended, it falls back
@@ -165,6 +168,7 @@ namespace {
     }
 
     BOOL CALLBACK EnumGenericPadsCallback(const DIDEVICEINSTANCE* instance, VOID* context) {
+        if (!XInputShim::IsPollingActive()) return DIENUM_STOP;
         auto* pads = static_cast<std::vector<GenericPad>*>(context);
         if (!pads || !g_directInput) return DIENUM_STOP;
         if (pads->size() >= 4) return DIENUM_STOP;
@@ -227,6 +231,7 @@ namespace {
     }
 
     void EnumerateGenericPadsLocked(bool forceLog) {
+        if (!XInputShim::IsPollingActive()) return;
         if (!EnsureDirectInputInitializedLocked()) {
             return;
         }
@@ -266,6 +271,7 @@ namespace {
     }
 
     bool PollGenericPadLocked(GenericPad& pad) {
+        if (!XInputShim::IsPollingActive()) return false;
         if (!pad.device) {
             pad.connected = false;
             return false;
@@ -719,6 +725,7 @@ namespace {
     }
 
     DWORD GetNativeState(DWORD idx, XINPUT_STATE* st) {
+        if (!XInputShim::IsPollingActive()) return ERROR_DEVICE_NOT_CONNECTED;
         if (!g_xinput && !XInputShim::Init()) return ERROR_DEVICE_NOT_CONNECTED;
         if (!pGetState) return ERROR_DEVICE_NOT_CONNECTED;
         return pGetState(idx, st);
@@ -726,6 +733,7 @@ namespace {
 
     DWORD GetNativeCapabilities(DWORD idx, DWORD flags,
                                 XINPUT_CAPABILITIES* caps) {
+        if (!XInputShim::IsPollingActive()) return ERROR_DEVICE_NOT_CONNECTED;
         if (!g_xinput && !XInputShim::Init()) return ERROR_DEVICE_NOT_CONNECTED;
         if (!pGetCaps) return ERROR_DEVICE_NOT_CONNECTED;
         return pGetCaps(idx, flags, caps);
@@ -849,24 +857,25 @@ namespace {
         }
     }
 
-    void PublishSnapshot(XInputShim::Snapshot snapshot) {
+    void PublishSnapshot(XInputShim::Snapshot snapshot, uint64_t generation) {
+        bool inventoryChanged = false;
         {
             std::lock_guard<std::mutex> lock(g_snapshotMutex);
+            if (!XInputShim::IsPollingActive() || generation != g_pollingGeneration.load()) return;
+            inventoryChanged = snapshot.connectedMask != g_cachedSnapshot.connectedMask ||
+                snapshot.nativeMask != g_cachedSnapshot.nativeMask ||
+                snapshot.genericMask != g_cachedSnapshot.genericMask ||
+                memcmp(snapshot.slotNames, g_cachedSnapshot.slotNames, sizeof(snapshot.slotNames)) != 0;
             snapshot.generation = g_cachedSnapshot.generation + 1;
             g_cachedSnapshot = snapshot;
         }
-        LogSlotSummary(snapshot);
+        if (inventoryChanged) LogSlotSummary(snapshot);
     }
 
     void ControllerWatcherThread() {
         LogOut("[GAMEPAD] Background controller watcher started", true);
-        while (!g_isShuttingDown.load(std::memory_order_acquire)) {
-            if (g_onlineModeActive.load(std::memory_order_relaxed)) {
-                // Training features and ImGui navigation are suspended online, so park the
-                // controller watcher instead of continuously polling hardware in the background.
-                Sleep(250);
-                continue;
-            }
+        const uint64_t generation = g_pollingGeneration.load(std::memory_order_acquire);
+        while (XInputShim::IsPollingActive() && generation == g_pollingGeneration.load()) {
 
             DWORD sleepMs = 16;
             // Poll native XInput slots WITHOUT holding the snapshot mutex; XInputGetState
@@ -874,11 +883,13 @@ namespace {
             std::array<XINPUT_STATE, 4> nativeStatesLocal{};
             unsigned nativeMaskLocal = 0;
             PollNativeSnapshotUnlocked(nativeStatesLocal, nativeMaskLocal);
+            if (!XInputShim::IsPollingActive() || generation != g_pollingGeneration.load()) break;
             RefreshNewNativeCapabilitiesUnlocked(nativeMaskLocal);
             XInputShim::Snapshot nextSnapshot{};
             BuildSnapshot(nativeStatesLocal, nativeMaskLocal, nextSnapshot);
             const unsigned combinedMaskAfter = nextSnapshot.connectedMask;
-            PublishSnapshot(nextSnapshot);
+            PublishSnapshot(nextSnapshot, generation);
+            if (!XInputShim::IsPollingActive() || generation != g_pollingGeneration.load()) break;
             if (combinedMaskAfter == 0 && g_genericPads.empty()) {
                 sleepMs = 250;
             } else {
@@ -906,9 +917,18 @@ namespace {
             }
             Sleep(sleepMs);
         }
+        ReleaseGenericPadsLocked();
+        g_lastGenericEnumTick = 0;
+        g_lastNamesPublishTick = 0;
+        g_nativeCapabilitiesMask = 0;
+        g_watcherStarted.store(false, std::memory_order_release);
+        // A new Battle may have opened while the old driver call returned.
+        // The old generation cannot publish; start the requested one now.
+        if (XInputShim::IsPollingActive()) EnsureWatcherStarted();
     }
 
     void EnsureWatcherStarted() {
+        if (!XInputShim::IsPollingActive()) return;
         bool expected = false;
         if (g_watcherStarted.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
             std::thread(ControllerWatcherThread).detach();
@@ -939,6 +959,25 @@ namespace {
 }
 
 namespace XInputShim {
+    bool IsPollingActive() {
+        return g_pollingActive.load(std::memory_order_acquire) &&
+            !g_onlineModeActive.load(std::memory_order_acquire) &&
+            !g_isShuttingDown.load(std::memory_order_acquire);
+    }
+
+    void SetPollingActive(bool active) {
+        active = active && !g_onlineModeActive.load() && !g_isShuttingDown.load();
+        if (g_pollingActive.load(std::memory_order_acquire) == active) return;
+        {
+            std::lock_guard<std::mutex> lock(g_snapshotMutex);
+            if (g_pollingActive.load() == active) return;
+            g_pollingActive.store(active, std::memory_order_release);
+            g_pollingGeneration.fetch_add(1, std::memory_order_acq_rel);
+            g_cachedSnapshot = {};
+        }
+        if (active) EnsureWatcherStarted();
+    }
+
     bool Init() {
         EnsureWatcherStarted();
         if (g_xinput) return true;
@@ -1002,6 +1041,7 @@ namespace XInputShim {
     }
 
     void Enable(BOOL en) {
+        if (!IsPollingActive()) return;
         if (!g_xinput && !Init()) return;
         if (pEnable) pEnable(en);
     }
@@ -1011,8 +1051,8 @@ namespace XInputShim {
     }
 
     void CopySnapshot(Snapshot& out) {
-        EnsureWatcherStarted();
         std::lock_guard<std::mutex> lock(g_snapshotMutex);
+        if (!IsPollingActive()) { out = {}; return; }
         out = g_cachedSnapshot;
     }
 
