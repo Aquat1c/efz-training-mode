@@ -135,6 +135,13 @@ namespace {
     char __fastcall HookedBattleUpdate(void* battleContext, void* /*edx*/) {
     auto hookExecution = MinHookUtils::EnterExecution(MinHookUtils::TicketFor<&HookedBattleUpdate>());
     if (!hookExecution.Admitted()) return oBattleUpdate ? oBattleUpdate(battleContext) : SCREEN_BATTLE;
+        if (g_onlineModeActive.load(std::memory_order_acquire)
+            || IsNetplaySuspendActive() || IsNetplaySessionActive()) {
+            // Netplay owns this battle: exactly-once original dispatch and
+            // nothing else - no hotswap entry, callbacks, batch accounting,
+            // exit routing or controller polling changes.
+            return oBattleUpdate ? oBattleUpdate(battleContext) : SCREEN_BATTLE;
+        }
         CharacterHotswap::OnBattleFrontendEntry(reinterpret_cast<uintptr_t>(battleContext));
         const uint32_t batch = s_currentBattleBatch.fetch_add(
             1, std::memory_order_acq_rel) + 1;
@@ -209,18 +216,16 @@ namespace {
             }
         }
 
-        if (ImGuiImpl::IsVisible()) {
-            if (practiceBattle) {
-                s_practiceEscHeld.store(gameActive && escDown, std::memory_order_relaxed);
-            } else {
-                s_practiceEscHeld.store(false, std::memory_order_relaxed);
-            }
-            return 0;
-        }
-
         if (!practiceBattle) {
+            // Outside a Practice battle EFZ's own dispatcher always runs; a
+            // still-visible training menu must never swallow it there.
             s_practiceEscHeld.store(false, std::memory_order_relaxed);
             return oBattleHotkeys ? oBattleHotkeys(battleContext) : 0;
+        }
+
+        if (ImGuiImpl::IsVisible()) {
+            s_practiceEscHeld.store(gameActive && escDown, std::memory_order_relaxed);
+            return 0;
         }
 
         if (!gameActive) {
@@ -395,6 +400,31 @@ bool IsTrainingMenuContext() {
         return false;
     }
     return true;
+}
+
+bool IsPracticeContext() {
+    if (g_onlineModeActive.load(std::memory_order_acquire)) {
+        return false;
+    }
+    if (IsNetplaySuspendActive() || IsNetplaySessionActive()) {
+        return false;
+    }
+    return GetCurrentGameMode() == GameMode::Practice;
+}
+
+bool IsPracticeWorldLive() {
+    if (!IsPracticeContext()) {
+        return false;
+    }
+    const uintptr_t base = GetEFZBase();
+    uintptr_t p1 = 0;
+    return base != 0
+        && SafeReadMemory(base + EFZ_BASE_OFFSET_P1, &p1, sizeof(p1))
+        && p1 != 0;
+}
+
+void ClearBattleFrontendRouting() {
+    s_exitRouting.Arm(GameFrontend::ExitRoute::None);
 }
 
 bool EnsureFrontendControlHooksInstalled() {

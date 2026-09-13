@@ -45,6 +45,18 @@ enum CutterMode {
     CUTTER_COUNT        = 2
 };
 
+// Values of the AUTO CUTTER row (DisplayData::pNSayuriAutoCutter). ON presses
+// A for her on the first fighter pass of an open window - armed, her own
+// blockstop over, no opponent superflash - through the auto-action normal
+// pulse, so it lands after EFZ's input producer and before her character
+// consumer in either controller mode. It is the only way a CPU dummy Sayuri
+// ever cuts out, and therefore the only way to test a string against it.
+enum AutoCutterMode {
+    AUTO_CUTTER_OFF   = 0,
+    AUTO_CUTTER_ON    = 1,
+    AUTO_CUTTER_COUNT = 2
+};
+
 // ---------------------------------------------------------------------------
 // Per-opponent picker list.
 //
@@ -79,8 +91,18 @@ int  ValidateChoiceIndex(int playerNum, int idx);
 // can never silently mean a different move against the next.
 void SetMemory(int playerNum, int choiceIndex, int resolvedMoveId);
 void SetCutter(int playerNum, int mode);
+void SetAutoCutter(int playerNum, int mode);
+// AUTO CUTTER reaction delay in VISUAL frames (0..kAutoCutterDelayMax),
+// counted from the first monitor tick on which the cut-out window is open
+// (armed, her blockstop over, no opponent superflash). 0 is the earliest
+// press the engine accepts; the engine itself has no later-than-first-tick
+// rule, so any value above 0 models the player, not the game.
+void SetAutoCutterDelay(int playerNum, int visualFrames);
 int  GetMemory(int playerNum);
 int  GetCutter(int playerNum);
+int  GetAutoCutter(int playerNum);
+int  GetAutoCutterDelay(int playerNum);
+constexpr int kAutoCutterDelayMax = 60;
 
 // Per-tick poll, driven by the frame monitor. Reads Sayuri's move ID itself
 // rather than reusing a value sampled earlier in the monitor iteration.

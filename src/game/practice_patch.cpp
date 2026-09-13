@@ -524,11 +524,12 @@ std::string GetDirectionName(uint8_t inputBits) {
 
 // Function to disable Player 2 controls in Practice mode
 bool DisablePlayer2InPracticeMode() {
-    // CRITICAL: Never modify game state during online mode
-    if (g_onlineModeActive.load()) return false;
+    // Never modify game state once netplay has published a session/suspend or
+    // outside Practice: P2 CPU=1 / AI=1 on one peer of an online match desyncs it.
+    if (!IsPracticeContext()) return false;
 
     std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
-    if (g_onlineModeActive.load(std::memory_order_acquire)) return false;
+    if (!IsPracticeContext()) return false;
     KaoriRecoilDuck::Cancel(2, "Practice restored P2 AI control");
     CancelAutoActionChargeFollowup(2, "Practice restored P2 AI control");
     CancelP2AutoActionMotionTransaction("Practice restored P2 AI control");

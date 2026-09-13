@@ -761,6 +761,11 @@ namespace PauseIntegration {
     void NotePracticeControllerCandidate(void* practicePtr, const char* source) {
         if (!practicePtr) return;
         if (GetCurrentGameMode() != GameMode::Practice) return;
+        // Revival keeps dispatching through its Practice controller for about a
+        // second after the netplay menu/connect handshake starts, and the netplay
+        // mod deletes that object when the online session initialises. Anything
+        // captured under suspend is a dangling pointer for the whole set.
+        if (IsNetplaySuspendActive()) return;
         void* previous = s_practicePtr.exchange(practicePtr, std::memory_order_relaxed);
         if (previous != practicePtr) {
             std::ostringstream oss;
@@ -981,26 +986,41 @@ namespace PauseIntegration {
             }
         } else { // closing menu
             // Unwind in reverse priority order of what we actually used
+            // Practice-object and battle-object releases are data writes (and
+            // one native Revival call) into a world that, once netplay is
+            // published, is no longer ours - the Practice controller may
+            // already be deleted. Drop the ownership latches without writing
+            // in that case; the code-patch restore below is process-global and
+            // always runs.
+            const bool nativeWritesAllowed = !g_onlineModeActive.load(std::memory_order_acquire);
             if (s_weUsedOfficialToggle.load()) {
-                bool stillPaused=false; ReadPracticePauseFlag(stillPaused);
-                if (stillPaused) {
-                    if (InvokeOfficialToggle()) LogOut("[PAUSE] Official unpause", true);
-                    else LogOut("[PAUSE] Failed to invoke official unpause", true);
+                if (nativeWritesAllowed) {
+                    bool stillPaused=false; ReadPracticePauseFlag(stillPaused);
+                    if (stillPaused) {
+                        if (InvokeOfficialToggle()) LogOut("[PAUSE] Official unpause", true);
+                        else LogOut("[PAUSE] Failed to invoke official unpause", true);
+                    }
                 }
                 s_weUsedOfficialToggle.store(false);
             }
             if (s_weAppliedPatchFreeze.load()) {
-                ApplyPatchFreeze(false); // ignore result
-                // Mirror official behavior on unfreeze: reset step counter to 0 as well
-                ResetPracticeStepCounterToZero();
+                if (nativeWritesAllowed) {
+                    ApplyPatchFreeze(false); // ignore result
+                    // Mirror official behavior on unfreeze: reset step counter to 0 as well
+                    ResetPracticeStepCounterToZero();
+                }
                 s_weAppliedPatchFreeze.store(false);
             }
             if (s_weForcedFlagPause.load()) {
-                bool p=false; if (ReadPracticePauseFlag(p) && p) WritePracticePauseFlag(false);
+                if (nativeWritesAllowed) {
+                    bool p=false; if (ReadPracticePauseFlag(p) && p) WritePracticePauseFlag(false);
+                }
                 s_weForcedFlagPause.store(false);
             }
             if (s_weFrozeGamespeed.load()) {
-                uint8_t cur=0; if (ReadGamespeed(cur) && cur==0) WriteGamespeed(s_prevGamespeed.load());
+                if (nativeWritesAllowed) {
+                    uint8_t cur=0; if (ReadGamespeed(cur) && cur==0) WriteGamespeed(s_prevGamespeed.load());
+                }
                 s_weFrozeGamespeed.store(false);
             }
             if (s_weAppliedVisualPatches.load()) {

@@ -48,6 +48,12 @@ namespace ImGuiImpl {
     // Handle WndProc messages
     LRESULT WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
+    // Netplay boundary for the game-window subclass. Detach restores the
+    // previous proc only while ours is the live top-level proc; Attach chains
+    // over whatever is on top again. Both are no-ops for the fallback host.
+    bool DetachWndProc();
+    bool AttachWndProc();
+
     // Provide the current overlay window center (in ImGui screen coordinates)
     // so recenter actions (middle-click/L3) can snap to the UI instead of the raw client center.
     void SetOverlayCenter(const ImVec2& center);

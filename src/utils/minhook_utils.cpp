@@ -47,7 +47,24 @@ PracticeHooks::Outcome CloseAdmission(const char* owner){return OwnedHooks().Clo
 PracticeHooks::Outcome DisableOwnedTargets(const char* owner,const PracticeHooks::RetirementProof& proof){return OwnedHooks().DisableOwnedTargets(owner?owner:"",proof);}
 PracticeHooks::Outcome ReclaimDrainedTargets(const char* owner,const PracticeHooks::RetirementProof& proof){return OwnedHooks().ReclaimDrainedTargets(owner?owner:"",proof);}
 bool HasOwnedTarget(void* target){for(const auto& r:OwnedHooks().Snapshot())if(r.spec.target==target)return true;return false;}
-bool EnableOwnedTargets(const char* owner){bool result=true;for(const auto& r:OwnedHooks().Snapshot())if(!owner||r.spec.owner==owner)result=OwnedHooks().Enable(r.spec.target).Complete()&&result;return result;}
+bool EnableOwnedTargets(const char* owner){
+    bool result=true;
+    for(const auto& r:OwnedHooks().Snapshot()){
+        if(owner&&r.spec.owner!=owner)continue;
+        const auto image=OwnedHooks().Image(r.spec.target);
+        const auto outcome=OwnedHooks().Enable(r.spec.target);
+        LogOutcome("enable",r.spec.owner.c_str(),r.spec.abi.c_str(),outcome);
+        if(outcome.Complete()&&r.state==PracticeHooks::State::Enabled&&image!=PracticeHooks::EntryImage::Installed){
+            // Shared-entry recovery is silent inside the registry; say what happened
+            // so a peer re-hook (netplay's EndScene) is visible in the log.
+            std::ostringstream os;os<<r.spec.owner<<" enable "<<r.spec.abi
+                <<(image==PracticeHooks::EntryImage::Preimage?" re-installed over a peer-restored entry":" admission reopened over a foreign entry image");
+            LogOut(os.str(),true);
+        }
+        result=outcome.Complete()&&result;
+    }
+    return result;
+}
 bool CreateHook(void* target,void* detour,void** original,const char* category,const char* label,bool* alreadyCreated,PracticeHooks::CallbackTicket* ticket){
     if(alreadyCreated)*alreadyCreated=false;
     PracticeHooks::TargetSpec spec;

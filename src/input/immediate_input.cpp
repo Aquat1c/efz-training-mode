@@ -499,6 +499,13 @@ bool PressFor(int playerNum, uint8_t mask, int ticks) {
 static void ClearImpl(int playerNum) {
     if (s_practiceAdmissionClosed.load(std::memory_order_acquire)) return;
     if (playerNum < 1 || playerNum > 2) return;
+    if (g_onlineModeActive.load(std::memory_order_acquire)) {
+        // Netplay owns the fighters: drop the desired mask, never write it.
+        s_slot[playerNum].desired.store(0, std::memory_order_relaxed);
+        s_slot[playerNum].ticks.store(0, std::memory_order_relaxed);
+        s_slot[playerNum].lastWritten.store(0, std::memory_order_relaxed);
+        return;
+    }
     auto work = s_boundWorld.id.battleWorld ? EnterBoundWork() : Practice::WorkLease{};
     if (s_boundWorld.id.battleWorld && !work) return;
     s_slot[playerNum].desired.store(0, std::memory_order_relaxed);

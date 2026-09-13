@@ -1767,6 +1767,10 @@ bool DidConsumerStartRequestedNormal(uintptr_t character,
         (afterFrame >= 0 && beforeFrame >= 0 && afterFrame < beforeFrame);
     if (!actionInstanceChanged) return false;
 
+    // An authored expected move (guard cancel) replaces the universal-tier
+    // witness below entirely.
+    if (intent.expectedMove != 0) return afterMove == intent.expectedMove;
+
     // A competing AI command token can survive its producer and start a
     // special at this later consumer even though our raw normal was posted.
     // Prove the requested universal tier (or the bounded command/dash-normal

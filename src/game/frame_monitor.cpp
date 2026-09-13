@@ -39,6 +39,7 @@
 #include "../include/game/character_settings.h"
 #include "../include/game/character_hotswap.h"
 #include "../include/game/final_memory_patch.h"
+#include "../include/game/timer_freeze_patch.h"
 #include "../include/game/macro_controller.h"
 #include "../include/game/always_rg.h"
 #include "../include/game/random_rg.h"
@@ -509,18 +510,19 @@ bool TryGetLatestSnapshot(FrameSnapshot &out, unsigned int maxAgeMs) {
 }
 
 bool IsValidGameMode(GameMode mode) {
-    const Config::Settings& cfg = Config::GetSettings();
-    return !cfg.restrictToPracticeMode || (mode == GameMode::Practice);
+    // Any Mode is gone: training lives in Practice only. The old
+    // restrictToPracticeMode=false bypass is ignored on purpose.
+    return mode == GameMode::Practice;
 }
 
 bool ShouldFeaturesBeActive() {
-    if (IsNetplaySuspendActive()) {
+    if (IsNetplaySuspendActive() || IsNetplaySessionActive()
+        || g_onlineModeActive.load(std::memory_order_acquire)) {
         return false;
     }
 
     // Check if we have a valid game state
     uintptr_t base = GetEFZBase();
-    const Config::Settings& cfg = Config::GetSettings();
     GameMode currentMode = GetCurrentGameMode();
 
     bool isMatchRunning = false;
@@ -535,7 +537,7 @@ bool ShouldFeaturesBeActive() {
 
     // Features are active based on game mode, not window focus
     // Window focus only affects key monitoring (handled separately in input_handler.cpp)
-    return !cfg.restrictToPracticeMode || (currentMode == GameMode::Practice);
+    return currentMode == GameMode::Practice;
 }
 
 // Function to update the trigger status overlay with per-line coloring
@@ -1329,7 +1331,11 @@ void FrameDataMonitor() {
                 + std::to_string(lifecycleGeneration), detailedLogging.load());
         }
 
-        if (!scopedMonitor && g_onlineModeActive.load(std::memory_order_acquire)) {
+        // Park on the export's own suspend/session signal as well as the
+        // latched online flag: the two are published moments apart and this
+        // body must not run a single iteration in between.
+        if (!scopedMonitor && (g_onlineModeActive.load(std::memory_order_acquire)
+                               || IsNetplaySuspendActive() || IsNetplaySessionActive())) {
             if (highResActive) {
                 (void)monitorTiming.EndInterval();
                 highResActive = false;
@@ -1342,6 +1348,28 @@ void FrameDataMonitor() {
             continue;
         }
 
+    // Check current game phase (single authoritative call per loop)
+    GamePhase currentPhase = scopedMonitor?GamePhase::Match:GetCurrentGamePhase();
+    GameMode currentMode = scopedMonitor?GameMode::Practice:GetCurrentGameMode();
+    if (!scopedMonitor && !g_featuresEnabled.load(std::memory_order_acquire)
+        && (currentMode != GameMode::Practice || currentPhase == GamePhase::Menu)
+        && !CharacterHotswap::IsBusy()) {
+        // Outside Practice with nothing left to retire: no pointer refresh,
+        // framestep, overlays, key monitoring or timer lease - only the
+        // mode/phase read above plus the phase bookkeeping, so the next
+        // Practice character select still registers as an edge.
+        if (highResActive) {
+            (void)monitorTiming.EndInterval();
+            highResActive = false;
+        }
+        monitorWorld.lastPhase = currentPhase;
+        s_lastPhaseMode = currentMode;
+        matchLogAnchorInternal = -1;
+        SetCurrentLogMatchInternalFrame(-1);
+        (void)Practice::WaitForMonitorSignal(50000000);
+        expectedNext = clock::now() + targetFrameTime;
+        continue;
+    }
     // Refresh core pointer cache once per loop iteration
     if(scopedMonitor) {
         const auto& context=work.Context();
@@ -1349,9 +1377,6 @@ void FrameDataMonitor() {
         s_ptrCache.p1=context.player1;s_ptrCache.p2=context.player2;
         s_ptrCache.gen=s_ptrGen.fetch_add(1,std::memory_order_relaxed)+1;
     } else RefreshPointerCache();
-    // Check current game phase (single authoritative call per loop)
-    GamePhase currentPhase = scopedMonitor?GamePhase::Match:GetCurrentGamePhase();
-    GameMode currentMode = scopedMonitor?GameMode::Practice:GetCurrentGameMode();
     if (currentPhase == GamePhase::Match) {
         if (matchLogAnchorInternal < 0) {
             matchLogAnchorInternal = frameBeforeIncrement + 1;
@@ -1374,6 +1399,7 @@ void FrameDataMonitor() {
             || netplayNow != lastFmSyncNetplay;
         if (fmSyncNeeded) {
             const int fmChanges = SyncFinalMemoryBypassForCurrentMode("FrameDataMonitor transition");
+            TimerFreeze::SyncForCurrentMode("FrameDataMonitor transition");
             if (fmChanges > 0 || detailedLogging.load()) {
                 std::ostringstream oss;
                 oss << "[FM_PATCH] Frame monitor sync"
@@ -1516,8 +1542,8 @@ void FrameDataMonitor() {
 #if ENABLE_CS_DEBUG_LOGS
                 LogCharacterSelectDiagnostics();
 #endif
-                // Only perform CS control resets in Practice mode
-                if (GetCurrentGameMode() == GameMode::Practice) {
+                // Only perform CS control resets in Practice mode with no netplay session/suspend published
+                if (IsPracticeContext()) {
                     // DON'T clear swap flag here - ResetControlMappingForMenusToP1 needs it to know if restoration is needed
                     // Flag will be cleared AFTER restoration happens (inside ResetControlMappingForMenusToP1)
                     ResetControlOnCharacterSelect();
@@ -1583,7 +1609,7 @@ void FrameDataMonitor() {
             }
             // Snapshot/restore: after a short debounce, capture CS baseline ONCE (first stable CS in session) and restore every CS entry.
             // Rationale: We do NOT want in-match swaps to redefine the CS baseline. CS should always return to the original mapping.
-            if (s_characterSelectPhaseFrames >= 30 && GetCurrentGameMode() == GameMode::Practice) {
+            if (s_characterSelectPhaseFrames >= 30 && IsPracticeContext()) {
                 uintptr_t base = GetEFZBase(); uintptr_t gs = 0;
                 if (base && SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gs, sizeof(gs)) && gs) {
                     uint8_t active=0xFF, p1cpu=0xFF, p2cpu=0xFF;
@@ -1714,11 +1740,10 @@ void FrameDataMonitor() {
         } else if (s_characterSelectPhaseFrames > 0) {
             // Leaving Character Select: apply any deferred CPU flag baseline once
             s_characterSelectPhaseFrames = 0;
-            if (GetCurrentGameMode() == GameMode::Practice && s_pendingPostCsCpuApply && s_csBaseline.valid) {
+            if (IsPracticeContext() && s_pendingPostCsCpuApply && s_csBaseline.valid) {
                 std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
                 uintptr_t gs = 0; uintptr_t base = GetEFZBase();
-                if (!g_onlineModeActive.load(std::memory_order_acquire) &&
-                    GetCurrentGameMode() == GameMode::Practice &&
+                if (IsPracticeContext() &&
                     base && SafeReadMemory(base + EFZ_BASE_OFFSET_GAME_STATE, &gs, sizeof(gs)) && gs) {
                     uint8_t wantP1 = s_csBaseline.p1Cpu;
                     uint8_t wantP2 = s_csBaseline.p2Cpu;
@@ -1776,7 +1801,7 @@ void FrameDataMonitor() {
 
         // Track initialization & mode
         bool isInitialized = AreCharactersInitialized();
-        bool isValidGameMode = !Config::GetSettings().restrictToPracticeMode || (currentMode == GameMode::Practice);
+        bool isValidGameMode = (currentMode == GameMode::Practice);
 
         // Lightweight global Practice framestep tracker (no on-screen overlay)
         // - Tracks step count only while FA timing is actively waiting during pause in Practice.
@@ -3106,8 +3131,9 @@ FRAME_MONITOR_FRAME_END:
         if(Practice::MonitorStopRequested() || (scopedMonitor && !work.IsCurrent()))continue;
         // The delayed RF tail belongs to the same coarse work lease. A revoke
         // during any wait abandons it before resolving another pointer.
-        // Maintain RF freeze inline only during Match. Outside Match, avoid repeated stop spam.
-        if (!g_onlineModeActive.load() && currentPhase == GamePhase::Match) {
+        // Maintain RF freeze inline only during a Practice match with features on.
+        if (g_featuresEnabled.load(std::memory_order_acquire)
+            && !g_onlineModeActive.load() && currentPhase == GamePhase::Match) {
             // ~32 Hz maintenance
             auto& rfDecim=monitorWorld.rfDecim; if ((rfDecim++ % 6) == 0) { UpdateRFFreezeTick(); }
         } else {

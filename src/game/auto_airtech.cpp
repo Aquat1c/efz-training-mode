@@ -115,6 +115,9 @@ void ApplyAirtechPatches() {
 }
 
 void RemoveAirtechPatches() {
+    // Nothing is ever applied in safe mode. Never rewrite live code bytes we
+    // did not change - they may belong to another mod by now.
+    if (!patchesApplied) return;
     uintptr_t base = GetEFZBase();
     if (!base) {
         LogOut("[AUTO-AIRTECH] Cannot get game base address", true);

@@ -24,6 +24,7 @@
 #include "../include/utils/config.h"
 #include "../include/game/practice_patch.h"
 #include "../include/game/final_memory_patch.h"
+#include "../include/game/timer_freeze_patch.h"
 #include "../include/game/auto_action.h"  
 #include "../include/input/input_hook.h" 
 #include "../3rdparty/minhook/include/MinHook.h" 
@@ -353,6 +354,7 @@ void DelayedInitialization(HMODULE hModule) {
         // restore the original HP checks before this runtime decides whether to
         // reapply it for local practice.
         ForceRestoreFinalMemoryHPBypass("startup baseline");
+        TimerFreeze::ForceRestore("startup baseline");
 
     // Final Memory HP bypass is now manual via Debug tab to avoid unintended changes.
 
@@ -485,6 +487,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         // CRITICAL: Stop buffer freezing FIRST
         StopBufferFreezingIgnoringTutorialLease();
         ForceRestoreFinalMemoryHPBypass("DLL_PROCESS_DETACH");
+        TimerFreeze::ForceRestore("DLL_PROCESS_DETACH");
 
         // Then restore P2 control
         if (g_p2ControlOverridden) {

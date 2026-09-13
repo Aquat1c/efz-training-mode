@@ -402,7 +402,6 @@ namespace CharacterSettings {
                d.p1MisuzuInfinitePoison || d.p2MisuzuInfinitePoison ||
                d.p1RumiInfiniteShinai || d.p2RumiInfiniteShinai ||
                d.p1RumiInfiniteKimchi || d.p2RumiInfiniteKimchi ||
-               d.p1AkikoInfiniteTimeslow || d.p2AkikoInfiniteTimeslow ||
                d.p1AkikoFreezeCycle || d.p2AkikoFreezeCycle ||
                d.p1MioLockStance || d.p2MioLockStance ||
                d.p1KanoLockMagic || d.p2KanoLockMagic ||
@@ -1689,14 +1688,9 @@ namespace CharacterSettings {
                     if (cur != frozenVal) { SafeWriteMemory(bAddr,&frozenVal,sizeof(int)); }
                 }
             }
-            // Only digits are controlled when Infinite is enabled; no writes to trigger value at all
-            const bool wantInf = (pi==1)?localData.p1AkikoInfiniteTimeslow:localData.p2AkikoInfiniteTimeslow;
-            if (wantInf) {
-                // Continuously write zeros to the three on-screen digits to prevent any countdown
-                if (auto d3 = ResolvePointer(base, off, AKIKO_TIMESLOW_THIRD_OFFSET)) { int z=0; SafeWriteMemory(d3,&z,sizeof(int)); }
-                if (auto d2 = ResolvePointer(base, off, AKIKO_TIMESLOW_SECOND_OFFSET)) { int z=0; SafeWriteMemory(d2,&z,sizeof(int)); }
-                if (auto d1 = ResolvePointer(base, off, AKIKO_TIMESLOW_FIRST_OFFSET)) { int z=0; SafeWriteMemory(d1,&z,sizeof(int)); }
-            }
+            // INFINITE TIMESLOW is no longer enforced here: TimerFreeze::AkikoTimeslow
+            // no-ops the odometer add in her own tick (timer_freeze_patch.cpp), so
+            // there are no per-frame digit writes and nothing to do per tick.
         }; enforceAkiko(1); enforceAkiko(2);
 
         // Mio stance lock

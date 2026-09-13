@@ -3,6 +3,7 @@
 #include "../include/core/logger.h"
 #include "../include/utils/config.h"
 #include "../include/utils/audio_runtime_state.h"
+#include "../include/utils/audio_control.h"
 #include "../include/utils/audio_file_control.h"
 #include <mutex>
 
@@ -322,11 +323,25 @@ bool PublishAudioSettings(int bgmPercent, int sePercent) {
 }
 
 bool PublishAudioLaneSetting(bool bgm, int percent) {
-    std::lock_guard<std::recursive_mutex> lock(g_controlMutex);
-    EfzAudioFileTransaction transaction;
-    if (!transaction) return false;
-    const auto view = AudioControl::ReadAudioSettings();
-    return PublishAudioSettings(bgm ? percent : view.bgmPercent, bgm ? view.sePercent : percent);
+    bool published = false;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_controlMutex);
+        EfzAudioFileTransaction transaction;
+        if (!transaction) return false;
+        const auto view = AudioControl::ReadAudioSettings();
+        published = PublishAudioSettings(bgm ? percent : view.bgmPercent, bgm ? view.sePercent : percent);
+    }
+    // Both branches of PublishAudioSettings (shared file or standalone) leave the
+    // new tuple in the runtime view, but nothing re-reads it until the game's next
+    // play/set-volume call, so a track already playing kept its old gain - the
+    // live apply the sliders used to make directly was dropped in 32665f9 with a
+    // comment about a coalesced apply request that nothing consumes. This is the
+    // one event-driven apply: once per slider step, on the caller's thread (both
+    // menus run on the game thread inside EndScene), after the bridge lock and the
+    // cross-process file mutex are released, touching only the lanes training
+    // owns. Volume is the one feature allowed to act outside Practice.
+    AudioControl::ApplyConfiguredVolumesNow();
+    return published;
 }
 Status GetStatus() { std::lock_guard<std::recursive_mutex> lock(g_controlMutex); return g_status; }
 bool IsSharedAudioActiveCached() { return GetStatus().audioShared; }

@@ -1397,12 +1397,10 @@ namespace SwitchPlayers {
     }
 
     bool ResetControlMappingForMenusToP1() {
-        // CRITICAL: Never modify game state during online mode
-        if (g_onlineModeActive.load()) return false;
+        // Never touch the game state once netplay has published a session or
+        // suspend, or outside Practice.
+        if (!IsPracticeContext()) return false;
 
-        // Only operate in Practice mode
-        if (GetCurrentGameMode() != GameMode::Practice) return false;
-        
         // Prevent repeated logs per Character Select instance
         UpdateCsCycleState();
         // Vanilla: ensure routing swap is disabled

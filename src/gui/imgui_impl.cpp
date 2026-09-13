@@ -45,6 +45,34 @@ namespace CharacterSettings {
 }
 static IDirect3DDevice9* g_d3dDevice = nullptr;
 static WNDPROC g_originalWndProc = nullptr;
+// True while ImGuiWndProc is chained on the game window. The pointer above is
+// kept valid across a detach so an in-flight call still forwards correctly.
+static bool g_wndProcAttached = false;
+// The game window's messages arrive on its creating thread only, so the
+// re-entrancy bookkeeping below needs no TLS (the XP build must not rely on
+// implicit TLS in an injected DLL).
+struct WndProcVisit {
+    HWND hwnd = nullptr;
+    UINT msg = 0;
+    WPARAM wParam = 0;
+    LPARAM lParam = 0;
+};
+static WndProcVisit g_wndProcVisit{};
+static int g_wndProcDepth = 0;
+static bool g_wndProcRingReported = false;
+class WndProcVisitScope {
+public:
+    WndProcVisitScope(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) : saved_(g_wndProcVisit) {
+        g_wndProcVisit = WndProcVisit{hWnd, msg, wParam, lParam};
+        ++g_wndProcDepth;
+    }
+    ~WndProcVisitScope() {
+        --g_wndProcDepth;
+        g_wndProcVisit = saved_;
+    }
+private:
+    WndProcVisit saved_;
+};
 static HWND g_imguiHostWindow = nullptr;
 static bool g_externalFallbackHost = false;
 static std::atomic<bool> g_externalFallbackThreadRunning{false};
@@ -710,6 +738,25 @@ static bool TrainingUiInputActive() {
 }
 
 LRESULT CALLBACK ImGuiWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    // A peer that re-subclasses over us and adopts us as its "previous" proc
+    // (netplay's NetplayWindowProc / DebugWndProc re-take on the disconnect
+    // recovery menu) closes the chain into a ring; every message then recurses
+    // until the stack is gone. The identical message re-entering here is that
+    // ring: hand it to the window class procedure (the game's own) once and stop.
+    if (g_wndProcDepth > 0 && g_wndProcVisit.hwnd == hWnd && g_wndProcVisit.msg == msg
+        && g_wndProcVisit.wParam == wParam && g_wndProcVisit.lParam == lParam) {
+        if (!g_wndProcRingReported) {
+            g_wndProcRingReported = true;
+            LogOut("[IMGUI] WndProc chain is a ring (a peer re-subclassed over us); routing the message to the window class procedure", true);
+        }
+        const WNDPROC classProc = reinterpret_cast<WNDPROC>(GetClassLongPtr(hWnd, GCLP_WNDPROC));
+        if (classProc && classProc != ImGuiWndProc) {
+            return CallWindowProc(classProc, hWnd, msg, wParam, lParam);
+        }
+        return DefWindowProc(hWnd, msg, wParam, lParam);
+    }
+    WndProcVisitScope visit(hWnd, msg, wParam, lParam);
+
     if (!g_imguiInitialized || !TrainingUiInputActive()) {
         return CallWindowProc(g_originalWndProc, hWnd, msg, wParam, lParam);
     }
@@ -953,6 +1000,7 @@ namespace ImGuiImpl {
                 SetLastError(0);
                 g_originalWndProc = (WNDPROC)SetWindowLongPtr(hostWindow, GWLP_WNDPROC, (LONG_PTR)ImGuiWndProc);
                 DWORD wndProcErr = GetLastError();
+                g_wndProcAttached = !(g_originalWndProc == nullptr && wndProcErr != 0);
                 if (!g_originalWndProc && wndProcErr != 0) {
                     LogOut("[IMGUI] Error: Failed to hook window procedure (err=" + std::to_string(wndProcErr) + ")", true);
                     ImGui_ImplDX9_Shutdown();
@@ -1249,11 +1297,63 @@ namespace ImGuiImpl {
         g_imguiVisible = false;
         g_d3dDevice = nullptr;
         g_originalWndProc = nullptr;
+        g_wndProcAttached = false;
         g_imguiHostWindow = nullptr;
         g_externalFallbackHost = false;
     }
-    
-    
+
+    bool DetachWndProc() {
+        if (!g_imguiInitialized || g_externalFallbackHost || !g_wndProcAttached || !g_originalWndProc) {
+            return false;
+        }
+        HWND hostWindow = g_imguiHostWindow;
+        if (!hostWindow || !IsWindow(hostWindow)) {
+            return false;
+        }
+        const WNDPROC currentWndProc = reinterpret_cast<WNDPROC>(GetWindowLongPtr(hostWindow, GWLP_WNDPROC));
+        if (currentWndProc != ImGuiWndProc) {
+            // Someone chained over us; rewriting the slot would drop them.
+            LogOut("[IMGUI] WndProc detach skipped: another hook owns the window proc", true);
+            return false;
+        }
+        SetLastError(0);
+        const LONG_PTR previous = SetWindowLongPtr(hostWindow, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(g_originalWndProc));
+        const DWORD err = GetLastError();
+        if (previous == 0 && err != 0) {
+            LogOut("[IMGUI] WndProc detach failed (err=" + std::to_string(err) + ")", true);
+            return false;
+        }
+        g_wndProcAttached = false;
+        LogOut("[IMGUI] WndProc detached for netplay suspend", true);
+        return true;
+    }
+
+    bool AttachWndProc() {
+        if (!g_imguiInitialized || g_externalFallbackHost || g_wndProcAttached) {
+            return false;
+        }
+        HWND hostWindow = g_imguiHostWindow;
+        if (!hostWindow || !IsWindow(hostWindow)) {
+            return false;
+        }
+        const WNDPROC currentWndProc = reinterpret_cast<WNDPROC>(GetWindowLongPtr(hostWindow, GWLP_WNDPROC));
+        if (currentWndProc == ImGuiWndProc) {
+            g_wndProcAttached = true;
+            return true;
+        }
+        SetLastError(0);
+        const LONG_PTR previous = SetWindowLongPtr(hostWindow, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(ImGuiWndProc));
+        const DWORD err = GetLastError();
+        if (previous == 0 && err != 0) {
+            LogOut("[IMGUI] WndProc attach failed (err=" + std::to_string(err) + ")", true);
+            return false;
+        }
+        g_originalWndProc = reinterpret_cast<WNDPROC>(previous);
+        g_wndProcAttached = true;
+        LogOut("[IMGUI] WndProc re-attached after netplay suspend", true);
+        return true;
+    }
+
     bool IsInitialized() {
         return g_imguiInitialized;
     }

@@ -222,10 +222,40 @@ void RunTlsExhaustionChild(){
 #endif
 
 }
+// A peer MinHook (netplay BattleLog) shares the D3D9 EndScene entry. Its
+// disable/remove restores the exact preimage we hooked over and its re-create
+// writes the same JMP again, leaving our record Enabled with a dead JMP.
+void PeerRestoredEntryReinstallsOnEnable(){
+    Fake f;Registry r(f.Get());auto s=f.Spec();s.owner="[OVERLAY][D3D9]";void* original=nullptr;CallbackTicket ticket;
+    CHECK(r.Acquire(s,&original).Complete());CHECK(r.BindCallback(s.target,ticket).Complete());
+    CHECK(r.Image(s.target)==EntryImage::Preimage);
+    CHECK(r.Enable(s.target).Complete());CHECK(r.Image(s.target)==EntryImage::Installed);r.CloseAdmission(s.owner);
+    // Peer restored the preimage over our JMP: re-install on top, refresh the image.
+    f.bytes[s.target]={1,2};CHECK(r.Image(s.target)==EntryImage::Preimage);
+    const uint64_t epoch=r.Epoch();
+    CHECK(r.Enable(s.target).Complete());
+    CHECK(f.bytes[s.target]==(std::vector<unsigned char>{9,9}));CHECK(r.Snapshot()[0].installed==(std::vector<unsigned char>{9,9}));
+    CHECK(r.Snapshot()[0].state==State::Enabled);CHECK(r.Epoch()>epoch);CHECK(r.Image(s.target)==EntryImage::Installed);
+    {auto guard=r.Enter(ticket);CHECK(guard.Admitted());}
+    // Peer layered over our live JMP: bytes untouched, admission reopens.
+    r.CloseAdmission(s.owner);f.bytes[s.target]={7,7};CHECK(r.Image(s.target)==EntryImage::Foreign);
+    CHECK(r.Enable(s.target).Complete());CHECK(f.bytes[s.target]==(std::vector<unsigned char>{7,7}));
+    CHECK(r.Snapshot()[0].installed==(std::vector<unsigned char>{9,9}));
+    {auto guard=r.Enter(ticket);CHECK(guard.Admitted());}
+    // Backend failure during re-install keeps admission closed and retries later.
+    r.CloseAdmission(s.owner);f.bytes[s.target]={1,2};f.enable=5;
+    CHECK(!r.Enable(s.target).Complete());{auto guard=r.Enter(ticket);CHECK(!guard.Admitted());}
+    CHECK(r.Snapshot()[0].installed==(std::vector<unsigned char>{9,9}));
+    f.enable=0;CHECK(r.Enable(s.target).Complete());CHECK(f.bytes[s.target]==(std::vector<unsigned char>{9,9}));
+    {auto guard=r.Enter(ticket);CHECK(guard.Admitted());}
+    // Physical retirement still refuses a foreign image.
+    r.CloseAdmission(s.owner);f.bytes[s.target]={7,7};
+    CHECK(!r.DisableOwnedTargets(s.owner,{true,true,true,r.Epoch(),1}).Complete());CHECK(r.Snapshot()[0].state==State::Enabled);
+}
 int main(int argc,char** argv){
 #ifdef _WIN32
     if(argc==2&&std::string(argv[1])=="--tls-exhausted") {ExhaustedFixedTlsSlotsFailClosed();return failures?1:0;}
     RunTlsExhaustionChild();CallbackDepthPreservesLastError();
 #endif
-    FailureRetention();OwnershipAndForeignBytes();PartialInputCreate();QueuedPartialRetirementAndStaleReceipt();CollisionSlotsRetainFailedRemoval();CallbackEntryAllocatesNothing();TitleOriginalAndRetryBinding();IndependentCollisionActivation();DeferredOverlayRelatchRestoresAdmission();OriginalRepairOnlyBeforeNativeAdmission();CallbackEntryDoesNotTakeLifecycleMutex();return failures?1:0;}
+    FailureRetention();OwnershipAndForeignBytes();PartialInputCreate();QueuedPartialRetirementAndStaleReceipt();CollisionSlotsRetainFailedRemoval();CallbackEntryAllocatesNothing();TitleOriginalAndRetryBinding();IndependentCollisionActivation();DeferredOverlayRelatchRestoresAdmission();OriginalRepairOnlyBeforeNativeAdmission();PeerRestoredEntryReinstallsOnEnable();CallbackEntryDoesNotTakeLifecycleMutex();return failures?1:0;}
 

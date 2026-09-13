@@ -12,6 +12,7 @@
 #include "../../include/core/memory.h"
 #include "../../include/input/framestep.h"
 #include "../../include/utils/pause_integration.h"
+#include "../../include/utils/network.h" // IsNetplaySuspendActive
 #include "../../3rdparty/minhook/include/MinHook.h"
 #include <windows.h>
 #include <atomic>
@@ -67,6 +68,12 @@ namespace {
     uintptr_t __fastcall HookedHotkeyEval(void* self, void* edxValue, int a2) {
     auto hookExecution = MinHookUtils::EnterExecution(MinHookUtils::TicketFor<&HookedHotkeyEval>());
     if (!hookExecution.Admitted()) return oHotkeyEval ? oHotkeyEval(self, edxValue, a2) : 0;
+        if (IsNetplaySuspendActive()) {
+            // Revival still calls this dispatcher through the netplay menu and the
+            // connect handshake, on a Practice object the netplay mod is about to
+            // delete. Nothing here may capture or gate against it; pass through.
+            return oHotkeyEval ? oHotkeyEval(self, edxValue, a2) : 0;
+        }
         PauseIntegration::NotePracticeControllerCandidate(self, "PracticeDispatcher");
         if (Gate_IsMenuVisible() || Mission::PauseMenu::IsOpen() ||
             Mission::TutorialSession::IsActive() ||

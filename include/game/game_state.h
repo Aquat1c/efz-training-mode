@@ -32,6 +32,19 @@ bool IsInCharacterSelectScreen();
 // frame monitor's own hysteresis.
 bool IsTrainingMenuContext();
 
+// Netplay-aware authority for touching game state at all: online mode is not
+// latched, the netplay export publishes neither a session nor a suspend, and
+// the mode byte says Practice. Three atomics plus the mode read, no
+// window-focus or feature-flag input, so every writer can afford it.
+bool IsPracticeContext();
+// IsPracticeContext() plus a live P1 fighter object. World-scoped restores
+// (CPU/AI flags, fighter fields, the Practice controller) may write only under
+// this: once the fighters are gone, the next owner of those objects - efz.exe's
+// own mode init or netplay's session init - re-initialises them itself.
+bool IsPracticeWorldLive();
+// Drops any armed one-shot battle exit route; netplay owns the battle now.
+void ClearBattleFrontendRouting();
+
 enum class FrontendExitTarget : uint8_t {
     CharacterSelect = 1,
     Loading = 2,

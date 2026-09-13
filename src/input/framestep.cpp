@@ -146,9 +146,8 @@ namespace {
     }
 
     bool IsValidFramestepMode() {
-        GameMode mode = GetCurrentGameMode();
-        Config::Settings cfg = Config::GetSettings();
-        return !cfg.restrictToPracticeMode || (mode == GameMode::Practice);
+        // Any Mode is gone: framestep lives in Practice only.
+        return GetCurrentGameMode() == GameMode::Practice;
     }
 
     void RemoveStatusMessage() {

@@ -15,6 +15,8 @@ void SetSetting(const std::string& section,const std::string& key,const std::str
 }
 }
 void LogOut(const std::string&,bool) {}
+// The bridge pushes each published tuple onto the live buffers; the test links no audio owner.
+namespace AudioControl { void ApplyConfiguredVolumesNow() {} }
 void SetupTrainingFile(const std::string& path) {
  ExtendedConfigBridge::g_admitted=true;ExtendedConfigBridge::g_status={};
  ExtendedConfigBridge::g_status.sharedConfigPath=path;ExtendedConfigBridge::g_status.sharedConfigFound=true;

@@ -858,6 +858,27 @@
 #define AKIKO_TIMESLOW_THIRD_OFFSET      0x3154
 #define AKIKO_TIMESLOW_SECOND_OFFSET     0x3158
 #define AKIKO_TIMESLOW_FIRST_OFFSET      0x315C
+// Fourth odometer cell (thousands / 180-tick wind-down). The engine ends the
+// time-slow from THIS cell (level 4 written at 0x00725A89 once it is set), not
+// from the three displayed digits.
+#define AKIKO_TIMESLOW_FOURTH_OFFSET     0x3160
+// Time-slow odometer tick inside Akiko vtable slot 8 (sub_7256B0 @0x007256B0):
+//   007257FD  03 8A 54 31 00 00   add ecx,[edx+3154h]   (ecx = 4 - level)
+// INFINITE TIMESLOW replaces it with mov ecx,[edx+3154h] through the practice
+// PatchLedger (timer_freeze_patch.cpp); byte-verified against retail efz.exe.
+#define AKIKO_TIMESLOW_ODOMETER_ADD_VA   0x007257FDu
+
+// Akiko 214214 curse. The LEVEL lives on the VICTIM (+0x15C, 0..3: >=1 blocks
+// dash, >=2 blocks specials/supers, >=3 blocks jumps; written by follow-throughs
+// 304/306/308). The TIMER lives on AKIKO herself, seeded 1000 ticks (333.33
+// frames) and decremented once per internal frame in the same slot-8 tick:
+//   007257B2  83 EA 01            sub edx,1
+// FREEZE CURSE TIMER replaces it with sub edx,0 (timer_freeze_patch.cpp).
+// Note 0x15C (curse level) vs 0x315C (a time-slow digit) - different fields.
+#define AKIKO_CURSE_LEVEL_OFFSET         0x015C
+#define AKIKO_CURSE_TIMER_OFFSET         0x3148
+#define AKIKO_CURSE_TIMER_MAX            1000
+#define AKIKO_CURSE_TIMER_DECREMENT_VA   0x007257B2u
 
 // Mio – stance (short vs long) reuses the shared 0x3150 slot used by other characters for their
 // own mechanics (e.g., Ikumi genocide / Akiko bullet cycle). Safe to alias by character ID.
@@ -953,3 +974,18 @@
 #define MINAGI_PUPPET_SLOT_X_OFFSET       MAI_GHOST_SLOT_X_OFFSET
 #define MINAGI_PUPPET_SLOT_Y_OFFSET       MAI_GHOST_SLOT_Y_OFFSET
 #define MINAGI_PUPPET_SLOT_MAX_SCAN       MAI_GHOST_SLOT_MAX_SCAN
+
+// Mizuka Nagamori (CHAR_ID_MIZUKA, resource "nagamori") - Final Memory (moveID 312).
+// The FM timer is her own DWORD in the shared 0x3150 slot, seeded 1200 at
+// activation (0x004AD31B) and decremented once per internal frame by her entity
+// 417 handler, which on the same tick re-pins her +0x14C to 1200 (what freezes
+// the opponent) and her meter +0x148 to 0, then ends the FM when it reads 0:
+//   004BAAEF  83 EA 01            sub edx,1
+// FREEZE FM TIMER replaces it with sub edx,0 (timer_freeze_patch.cpp). Never
+// write 0 into the timer while it runs (it goes to -1 and never ends) and never
+// write >0 when no FM runs (nothing decrements it). +0x3148 is her BOW state
+// (0 in hand / 1 outbound / 2 returning) and must not be written either way.
+#define NAGAMORI_FM_MOVE_ID              312
+#define NAGAMORI_FM_TIMER_OFFSET         0x3150
+#define NAGAMORI_FM_TIMER_MAX            1200
+#define NAGAMORI_FM_TIMER_DECREMENT_VA   0x004BAAEFu

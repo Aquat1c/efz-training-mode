@@ -46,6 +46,7 @@ extern void SpamAttackButton(uintptr_t playerBase, uint8_t button, int frames, c
 #include "../include/game/random_rg.h"
 #include "../include/game/doppel_tech.h"
 #include "../include/game/sayuri_counter.h"
+#include "../include/game/timer_freeze_patch.h"
 // Random Block control
 #include "../include/game/random_block.h"
 #include "../include/game/auto_action.h" // g_p2ControlOverridden
@@ -2455,6 +2456,7 @@ namespace ImGuiGui {
                             ImGui::Dummy(ImVec2(1, 4));
                             ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Sayuri");
                             ImGui::TextWrapped("Remembered Move sets the attack she has countered and is waiting for. Whenever she blocks that same attack standing or crouching she flashes white, and A, B or C cuts straight out of the blockstun into Magical Cutter. Off leaves it to her own counter, Nothing empties it so you can practise baiting, Last Blocked keeps loading whatever she just blocked, and picking a move from the list stands in for landing the counter and holds it there so a stray counter cannot replace it. The list is the current opponent's moves and is rebuilt when they change. The cut-out needs a fresh press: a button already held through the block freeze produces nothing, so let go and press again. A dummy Sayuri on auto-block will keep loading and arming on her own.");
+                            ImGui::TextWrapped("Auto Cutter presses A for her the moment the window opens - her block freeze over, no superflash running - so a dummy Sayuri actually cuts out and you can test which strings leave the window open. It is the only way a CPU dummy ever performs the Cutter.");
                             ImGui::TextWrapped("Magical Cutter set to Always Ready opens that same window on every standing or crouching block, whatever she remembers. Air blocking never opens the window, and it stops working once Akiko's debuff has stacked up on her.");
                             ImGui::Dummy(ImVec2(1, 4));
                             ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Nanase (Rumi)");
@@ -2946,10 +2948,39 @@ namespace ImGuiGui {
             int ts1 = guiState.localData.p1AkikoTimeslowTrigger;
             ts1 = CLAMP(ts1, AKIKO_TIMESLOW_INACTIVE, AKIKO_TIMESLOW_C);
             bool inf1 = guiState.localData.p1AkikoInfiniteTimeslow;
-            if (ImGui::Checkbox("Infinite timeslow (freeze 000)##p1Akiko", &inf1)) {
+            if (ImGui::Checkbox("Infinite timeslow##p1Akiko", &inf1)) {
                 guiState.localData.p1AkikoInfiniteTimeslow = inf1;
             }
-            // ImGui::TextDisabled("(Akiko: bullet routes and clock-slow; 'Infinite' now freezes the XYZ digits to 000)");
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Stops the time-slow counter from advancing, so a 641236 slow never winds down.\n"
+                    "It is a patch on her own tick, not a memory write: the digits simply stop where they are,\n"
+                    "and turning it off lets the count resume. Applies to whichever side plays Akiko.");
+            }
+            bool curse1 = guiState.localData.p1AkikoFreezeCurse;
+            if (ImGui::Checkbox("Freeze curse timer##p1Akiko", &curse1)) {
+                guiState.localData.p1AkikoFreezeCurse = curse1;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Holds the 214214 curse timer once a curse has landed, so the opponent stays at that\n"
+                    "curse level (A: no dashes, B: no specials or supers, C: no jumps) until you turn it off\n"
+                    "or the round ends. The curse aura and gauge keep running from the game's own code.");
+            }
+    }
+        // P1 Mizuka (Nagamori) Settings
+        else if (p1CharID == CHAR_ID_MIZUKA) {
+            bool fm1 = guiState.localData.p1MizukaFreezeFm;
+            if (ImGui::Checkbox("Freeze FM timer##p1Mizuka", &fm1)) {
+                guiState.localData.p1MizukaFreezeFm = fm1;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Holds her Final Memory timer once the FM is running, so the opponent stays frozen and\n"
+                    "the FM never ends until you turn it off or the round ends. Her meter stays pinned at 0\n"
+                    "and no further poems spawn while it is held; turning it off resumes the countdown from\n"
+                    "where it stopped. Applies to whichever side plays Mizuka.");
+            }
     }
         // P1 Mai (Kawasumi) Settings
         else if (p1CharID == CHAR_ID_MAI) {
@@ -3181,6 +3212,29 @@ namespace ImGuiGui {
                     "Normal: only the move she remembers opens the cut-out window.\n"
                     "Always Ready: every standing or crouching block opens it, whatever she remembers, so you can drill the reaction with no setup.\n"
                     "Air blocking never opens the window, and it stops working once Akiko's debuff has stacked up on her.");
+            }
+            bool sayuriAuto1 = guiState.localData.p1SayuriAutoCutter != 0;
+            if (ImGui::Checkbox("Auto Cutter##p1SayuriAutoCutter", &sayuriAuto1)) {
+                guiState.localData.p1SayuriAutoCutter = sayuriAuto1 ? 1 : 0;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Presses A for her the moment the cut-out window opens, so a dummy Sayuri punishes any string that leaves it open.\n"
+                    "Off leaves the press to whoever controls her.");
+            }
+            if (sayuriAuto1) {
+                ImGui::Text("Cutter delay (frames):"); ImGui::SameLine();
+                int cutterDelay1 = guiState.localData.p1SayuriAutoCutterDelay;
+                ImGui::SetNextItemWidth(120.0f);
+                if (ImGui::InputInt("##p1SayuriCutterDelay", &cutterDelay1)) {
+                    guiState.localData.p1SayuriAutoCutterDelay = CLAMP(cutterDelay1, 0, SayuriCounter::kAutoCutterDelayMax);
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip(
+                        "Frames she waits after the window opens before pressing.\n"
+                        "0 is the earliest press the game accepts - the first frame after the block freeze.\n"
+                        "Higher values stand in for a player's reaction; if the delay outlasts the blockstun she does not cut out.");
+                }
             }
         }
     // P1 Nanase (Rumi) Settings
@@ -3453,10 +3507,39 @@ namespace ImGuiGui {
                 guiState.localData.p2AkikoTimeslowTrigger = ts2;
             }
             bool inf2 = guiState.localData.p2AkikoInfiniteTimeslow;
-            if (ImGui::Checkbox("Infinite timeslow (freeze 000)##p2Akiko", &inf2)) {
+            if (ImGui::Checkbox("Infinite timeslow##p2Akiko", &inf2)) {
                 guiState.localData.p2AkikoInfiniteTimeslow = inf2;
             }
-            // ImGui::TextDisabled("(Akiko: bullet routes and clock-slow; 'Infinite' now freezes the XYZ digits to 000)");
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Stops the time-slow counter from advancing, so a 641236 slow never winds down.\n"
+                    "It is a patch on her own tick, not a memory write: the digits simply stop where they are,\n"
+                    "and turning it off lets the count resume. Applies to whichever side plays Akiko.");
+            }
+            bool curse2 = guiState.localData.p2AkikoFreezeCurse;
+            if (ImGui::Checkbox("Freeze curse timer##p2Akiko", &curse2)) {
+                guiState.localData.p2AkikoFreezeCurse = curse2;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Holds the 214214 curse timer once a curse has landed, so the opponent stays at that\n"
+                    "curse level (A: no dashes, B: no specials or supers, C: no jumps) until you turn it off\n"
+                    "or the round ends. The curse aura and gauge keep running from the game's own code.");
+            }
+    }
+        // P2 Mizuka (Nagamori) Settings
+        else if (p2CharID == CHAR_ID_MIZUKA) {
+            bool fm2 = guiState.localData.p2MizukaFreezeFm;
+            if (ImGui::Checkbox("Freeze FM timer##p2Mizuka", &fm2)) {
+                guiState.localData.p2MizukaFreezeFm = fm2;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Holds her Final Memory timer once the FM is running, so the opponent stays frozen and\n"
+                    "the FM never ends until you turn it off or the round ends. Her meter stays pinned at 0\n"
+                    "and no further poems spawn while it is held; turning it off resumes the countdown from\n"
+                    "where it stopped. Applies to whichever side plays Mizuka.");
+            }
     }
         // P2 Mai (Kawasumi) Settings
         else if (p2CharID == CHAR_ID_MAI) {
@@ -3675,6 +3758,29 @@ namespace ImGuiGui {
                     "Always Ready: every standing or crouching block opens it, whatever she remembers, so you can drill the reaction with no setup.\n"
                     "Air blocking never opens the window, and it stops working once Akiko's debuff has stacked up on her.");
             }
+            bool sayuriAuto2 = guiState.localData.p2SayuriAutoCutter != 0;
+            if (ImGui::Checkbox("Auto Cutter##p2SayuriAutoCutter", &sayuriAuto2)) {
+                guiState.localData.p2SayuriAutoCutter = sayuriAuto2 ? 1 : 0;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Presses A for her the moment the cut-out window opens, so a dummy Sayuri punishes any string that leaves it open.\n"
+                    "Off leaves the press to whoever controls her.");
+            }
+            if (sayuriAuto2) {
+                ImGui::Text("Cutter delay (frames):"); ImGui::SameLine();
+                int cutterDelay2 = guiState.localData.p2SayuriAutoCutterDelay;
+                ImGui::SetNextItemWidth(120.0f);
+                if (ImGui::InputInt("##p2SayuriCutterDelay", &cutterDelay2)) {
+                    guiState.localData.p2SayuriAutoCutterDelay = CLAMP(cutterDelay2, 0, SayuriCounter::kAutoCutterDelayMax);
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip(
+                        "Frames she waits after the window opens before pressing.\n"
+                        "0 is the earliest press the game accepts - the first frame after the block freeze.\n"
+                        "Higher values stand in for a player's reaction; if the delay outlasts the blockstun she does not cut out.");
+                }
+            }
         }
     // P2 Nanase (Rumi) Settings
     else if (p2CharID == CHAR_ID_NANASE) {
@@ -3793,7 +3899,7 @@ namespace ImGuiGui {
         ImGui::Separator();
         ImGui::TextWrapped(
             "Character-specific settings allow you to modify special parameters unique to each character.\n"
-            "Supported: Ikumi (Blood/Genocide), Misuzu (Feathers), Mishio (Element/Awakened), Rumi (Stance, Kimchi), Akiko (Bullet/Time-Slow), Neyuki (Jam 0-9), Kano (Magic), Sayuri (Remembered Move/Magical Cutter), Mio (Stance), Doppel (Enlightened(Gold), Follow-Up Tech/Tech Stage), Mai (Ghost/Awakening), Minagi (Michiru position control + Always readied)");
+            "Supported: Ikumi (Blood/Genocide), Misuzu (Feathers), Mishio (Element/Awakened), Rumi (Stance, Kimchi), Akiko (Bullet/Time-Slow/Curse Timer), Neyuki (Jam 0-9), Kano (Magic), Sayuri (Remembered Move/Magical Cutter), Mio (Stance), Doppel (Enlightened(Gold), Follow-Up Tech/Tech Stage), Mai (Ghost/Awakening), Minagi (Michiru position control + Always readied), Mizuka (FM Timer)");
     }
     
     void RenderDebugInputTab() {
@@ -4526,6 +4632,16 @@ namespace ImGuiGui {
             }
             SayuriCounter::SetCutter(1, displayData.p1SayuriCutterMode);
             SayuriCounter::SetCutter(2, displayData.p2SayuriCutterMode);
+            SayuriCounter::SetAutoCutter(1, displayData.p1SayuriAutoCutter);
+            SayuriCounter::SetAutoCutter(2, displayData.p2SayuriAutoCutter);
+            SayuriCounter::SetAutoCutterDelay(1, displayData.p1SayuriAutoCutterDelay);
+            SayuriCounter::SetAutoCutterDelay(2, displayData.p2SayuriAutoCutterDelay);
+            TimerFreeze::SetRequested(TimerFreeze::AkikoCurse, 1, displayData.p1AkikoFreezeCurse);
+            TimerFreeze::SetRequested(TimerFreeze::AkikoCurse, 2, displayData.p2AkikoFreezeCurse);
+            TimerFreeze::SetRequested(TimerFreeze::AkikoTimeslow, 1, displayData.p1AkikoInfiniteTimeslow);
+            TimerFreeze::SetRequested(TimerFreeze::AkikoTimeslow, 2, displayData.p2AkikoInfiniteTimeslow);
+            TimerFreeze::SetRequested(TimerFreeze::MizukaFinalMemory, 1, displayData.p1MizukaFreezeFm);
+            TimerFreeze::SetRequested(TimerFreeze::MizukaFinalMemory, 2, displayData.p2MizukaFreezeFm);
 
             // Update atomic variables from our local copy
             autoAirtechEnabled.store(displayData.autoAirtech);

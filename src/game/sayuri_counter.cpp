@@ -6,6 +6,8 @@
 #include "../include/game/game_state.h"
 #include "../include/utils/utilities.h"   // GetEFZBase, g_featuresEnabled
 #include "../include/utils/network.h"     // IsNetplaySuspendActive
+#include "../include/input/input_hook.h"  // QueueAutoActionNormalPulse
+#include "../include/input/normal_input_policy.h"
 
 // The only translation unit that pulls in the notation catalogue. It is a
 // header-only compile-time table with no build-flag guard, but each including TU
@@ -44,7 +46,25 @@ namespace {
 // ---------------------------------------------------------------------------
 std::atomic<int> g_memoryChoice[3];   // MEMORY_OFF - presentation index only
 std::atomic<int> g_cutterMode[3];     // CUTTER_NORMAL
+std::atomic<int> g_autoCutter[3];     // AUTO_CUTTER_OFF
 std::atomic<int> g_pickedMove[3];     // resolved opponent move ID, 0 = none
+
+// AUTO CUTTER bookkeeping, monitor thread only. One press is owed per grounded
+// blockstun instance; a press the engine consumed inside a freeze leaves no
+// edge, so a bounded retry is allowed while the window is still open.
+int      g_cutterPressAttempts[3];
+uint64_t g_cutterPressGeneration[3];
+constexpr int kAutoCutterMaxAttempts = 3;
+
+// Reaction delay. The engine accepts the press on the very first tick after
+// the freeze (docs/SAYURI_COUNTER_MEMORY.md section 10), which no player can
+// do on reaction, so the row lets the drill wait a configurable number of
+// visual frames from the first tick the window is seen open. Counted on the
+// monitor's internal frame counter, three internal ticks per visual frame,
+// the same convention as the auto-action and airtech delays.
+std::atomic<int> g_autoCutterDelay[3];   // visual frames, 0 = earliest
+int g_cutterWindowOpenTick[3] = { -1, -1, -1 };  // frameCounter at first open
+constexpr int kInternalTicksPerVisualFrame = 3;
 
 // Catalogue table index the pinned move was resolved against, biased by +1 so
 // that the zero-initialised default means "nothing pinned". Tick() refuses to
@@ -389,7 +409,8 @@ void MirrorReadyFlash(uintptr_t base, uintptr_t baseOffset) {
 void TickSide(int playerNum, uintptr_t base) {
     const int choice = g_memoryChoice[playerNum].load(std::memory_order_acquire);
     const int cutter = g_cutterMode[playerNum].load(std::memory_order_acquire);
-    if (choice <= MEMORY_OFF && cutter == CUTTER_NORMAL) return;
+    const int autoCutter = g_autoCutter[playerNum].load(std::memory_order_acquire);
+    if (choice <= MEMORY_OFF && cutter == CUTTER_NORMAL && autoCutter == AUTO_CUTTER_OFF) return;
 
     const uintptr_t baseOffset = (playerNum == 1) ? EFZ_BASE_OFFSET_P1
                                                   : EFZ_BASE_OFFSET_P2;
@@ -475,6 +496,89 @@ void TickSide(int playerNum, uintptr_t base) {
         if (ReadDword(base, baseOffset, SAYURI_CUTTER_ARMED_OFFSET, armed) && armed != 1u) {
             if (WriteDword(base, baseOffset, SAYURI_CUTTER_ARMED_OFFSET, 1u)) {
                 MirrorReadyFlash(base, baseOffset);
+            }
+        }
+    }
+
+    // ----- AUTO CUTTER -----------------------------------------------------
+    // The engine tests the armed flag against a RISING EDGE on A/B/C on every
+    // internal frame of grounded blockstun once her own blockstop and the
+    // opponent's superflash are over; a press consumed inside either freeze
+    // leaves no edge (docs/SAYURI_COUNTER_MEMORY.md, "Edge vs held"). So the
+    // press is issued only once all three hold, and it goes through the
+    // auto-action normal pulse rather than the detached 64 Hz writer: that
+    // pulse lands after EFZ's own input producer and before her character
+    // consumer in whichever controller mode she is in, and it witnesses the
+    // move that actually started. The witness is Magical Cutter (258), not 5A.
+    if (autoCutter == AUTO_CUTTER_ON) {
+        int& attempts = g_cutterPressAttempts[playerNum];
+        uint64_t& generation = g_cutterPressGeneration[playerNum];
+        if (!inBlockstun) {
+            attempts = 0;
+            generation = 0;
+            g_cutterWindowOpenTick[playerNum] = -1;
+        } else {
+            if (blockstunEntry) {
+                attempts = 0;
+                generation = 0;
+                g_cutterWindowOpenTick[playerNum] = -1;
+            }
+            bool pulsePending = false;
+            if (generation != 0) {
+                if (GetAutoActionNormalPulseOutcome(playerNum, generation)
+                        == AutoActionNormalPulseOutcome::Pending) {
+                    pulsePending = true;
+                } else {
+                    // Accepted means she is in 258 now and left blockstun, so we
+                    // only get here on a lost press. Fall through to the retry.
+                    generation = 0;
+                }
+            }
+            // The window: armed, her own blockstop over, no opponent superflash.
+            // Its first sighting starts the reaction delay; the press itself is
+            // still gated on the window being open at the moment it is queued.
+            const uintptr_t oppOffset = (playerNum == 1) ? EFZ_BASE_OFFSET_P2
+                                                         : EFZ_BASE_OFFSET_P1;
+            uint32_t armed = 0;
+            int blockstop = 0;
+            int oppSuperflash = 0;
+            const bool windowOpen =
+                ReadDword(base, baseOffset, SAYURI_CUTTER_ARMED_OFFSET, armed) && armed == 1u &&
+                ReadWord(base, baseOffset, BLOCKSTUN_OFFSET, blockstop) && blockstop == 0 &&
+                ReadWord(base, oppOffset, SUPERFLASH_FREEZE_OFFSET, oppSuperflash) && oppSuperflash == 0;
+            int& openTick = g_cutterWindowOpenTick[playerNum];
+            const int nowTick = frameCounter.load(std::memory_order_relaxed);
+            if (windowOpen && openTick < 0) openTick = nowTick;
+            const int delayVisual = g_autoCutterDelay[playerNum].load(std::memory_order_acquire);
+            const bool delayElapsed = windowOpen && openTick >= 0 &&
+                (nowTick - openTick) >= delayVisual * kInternalTicksPerVisualFrame;
+            if (!pulsePending && attempts < kAutoCutterMaxAttempts) {
+                if (delayElapsed) {
+                    NormalInputPolicy::Intent intent{};
+                    intent.direction = NormalInputPolicy::RelativeDirection::Neutral;
+                    intent.button = NormalInputPolicy::kInputA;
+                    intent.airborne = false;
+                    intent.expectedMove = SAYURI_MOVE_MAGICAL_CUTTER;
+                    uint64_t submitted = 0;
+                    const auto submit = QueueAutoActionNormalPulse(
+                        playerNum, intent, NormalInputPolicy::Timing::Immediate, &submitted);
+                    if (submit == NormalInputPolicy::SubmitResult::Accepted) {
+                        generation = submitted;
+                        ++attempts;
+                        if (detailedLogging.load()) {
+                            LogOut(std::string("[SAYURI] P") + std::to_string(playerNum) +
+                                   " auto cutter press queued attempt=" + std::to_string(attempts) +
+                                   " move=" + std::to_string(moveID) +
+                                   " delayFrames=" + std::to_string(delayVisual) +
+                                   " waitedTicks=" + std::to_string(nowTick - openTick), true);
+                        }
+                    } else if (submit == NormalInputPolicy::SubmitResult::Invalid) {
+                        // Not a Practice battle, hooks closed, or her character
+                        // refused the intent: do not spin on it this instance.
+                        attempts = kAutoCutterMaxAttempts;
+                    }
+                    // Busy: another lane owns her input this pass; next poll.
+                }
             }
         }
     }
@@ -588,8 +692,37 @@ void SetCutter(int playerNum, int mode) {
     }
 }
 
+void SetAutoCutter(int playerNum, int mode) {
+    const int p = ClampPlayer(playerNum);
+    if (mode < AUTO_CUTTER_OFF || mode >= AUTO_CUTTER_COUNT) mode = AUTO_CUTTER_OFF;
+    const int prev = g_autoCutter[p].exchange(mode, std::memory_order_acq_rel);
+    if (prev != mode) {
+        LogOut(std::string("[SAYURI] P") + std::to_string(p) +
+               " auto cutter -> " + (mode == AUTO_CUTTER_ON ? "ON" : "OFF"), true);
+    }
+}
+
+void SetAutoCutterDelay(int playerNum, int visualFrames) {
+    const int p = ClampPlayer(playerNum);
+    if (visualFrames < 0) visualFrames = 0;
+    if (visualFrames > kAutoCutterDelayMax) visualFrames = kAutoCutterDelayMax;
+    const int prev = g_autoCutterDelay[p].exchange(visualFrames, std::memory_order_acq_rel);
+    if (prev != visualFrames) {
+        LogOut(std::string("[SAYURI] P") + std::to_string(p) +
+               " auto cutter delay -> " + std::to_string(visualFrames) + " frames", true);
+    }
+}
+
+int GetAutoCutterDelay(int playerNum) {
+    return g_autoCutterDelay[ClampPlayer(playerNum)].load(std::memory_order_acquire);
+}
+
 int GetMemory(int playerNum) {
     return g_memoryChoice[ClampPlayer(playerNum)].load(std::memory_order_acquire);
+}
+
+int GetAutoCutter(int playerNum) {
+    return g_autoCutter[ClampPlayer(playerNum)].load(std::memory_order_acquire);
 }
 
 int GetCutter(int playerNum) {
@@ -602,6 +735,9 @@ void ResetState() {
         g_pickedTableBias[p].store(0, std::memory_order_release);
         g_selectionStale[p].store(0, std::memory_order_release);
         g_prevMoveId[p].store(0, std::memory_order_release);
+        g_cutterPressAttempts[p] = 0;
+        g_cutterPressGeneration[p] = 0;
+        g_cutterWindowOpenTick[p] = -1;
     }
 }
 
@@ -616,7 +752,9 @@ void Tick() {
     if (g_memoryChoice[1].load(std::memory_order_acquire) == MEMORY_OFF &&
         g_memoryChoice[2].load(std::memory_order_acquire) == MEMORY_OFF &&
         g_cutterMode[1].load(std::memory_order_acquire) == CUTTER_NORMAL &&
-        g_cutterMode[2].load(std::memory_order_acquire) == CUTTER_NORMAL) {
+        g_cutterMode[2].load(std::memory_order_acquire) == CUTTER_NORMAL &&
+        g_autoCutter[1].load(std::memory_order_acquire) == AUTO_CUTTER_OFF &&
+        g_autoCutter[2].load(std::memory_order_acquire) == AUTO_CUTTER_OFF) {
         return;
     }
 

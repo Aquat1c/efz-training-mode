@@ -318,6 +318,15 @@ void Remove() {
     s_created.store(false, std::memory_order_release);
 }
 
+void SetAdmitted(bool admitted) {
+    if (!s_created.load(std::memory_order_acquire)) return;
+    if (admitted) {
+        (void)MinHookUtils::EnableOwnedTargets("[HUD_DISABLE]");
+    } else {
+        (void)MinHookUtils::CloseAdmission("[HUD_DISABLE]");
+    }
+}
+
 void SetHidden(bool hidden) {
     const bool prev = s_hidden.exchange(hidden, std::memory_order_relaxed);
     if (prev != hidden) LogOut(std::string("[HUD_DISABLE] HUD ") + (hidden ? "hidden" : "shown"), true);

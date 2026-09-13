@@ -11,6 +11,9 @@
 namespace PracticeHooks {
 enum class State { CreatedDisabled, Enabled, DisabledAwaitingDrain, Reclaimable, ExternalInstalling };
 enum class Result { Complete, Pending, Conflict, BackendFailure, ForeignBytes, MissingBackend };
+// Installed: our enabled image is live. Preimage: the bytes we hooked over are
+// live (a peer restored them, or the record was never enabled). Foreign: neither.
+enum class EntryImage { Unknown, Installed, Preimage, Foreign };
 struct Outcome {
     Result result=Result::Complete;
     size_t remaining=0;
@@ -100,6 +103,9 @@ public:
     ExecutionGuard Enter(const CallbackTicket& ticket) noexcept {return ExecutionGuard::Enter(ticket);}
     std::vector<Record> Snapshot() const;
     uint64_t Epoch() const;
+    // Diagnostic view of the live entry bytes relative to this record; never
+    // changes state.
+    EntryImage Image(void* target) const;
 private:
     bool Matches(const Record&,const std::vector<unsigned char>&) const;
     bool ProofCurrent(const RetirementProof&) const;

@@ -208,7 +208,34 @@ Outcome Registry::Enable(void* target){
     std::lock_guard<std::mutex> lock(mutex_);
     if(!backend_.read) return {Result::MissingBackend};
     for(auto& r:records_) if(r.spec.target==target){
-        if(r.state==State::Enabled){if(!Matches(r,r.installed))return {Result::ForeignBytes,1};if(!r.admissionOpen){if(epoch_==std::numeric_limits<uint64_t>::max())return {Result::Conflict,1};++epoch_;}r.admissionOpen=true;r.callbacks->admitted.store(true,std::memory_order_release);return {};}
+        if(r.state==State::Enabled){
+            if(!Matches(r,r.installed)){
+                if(r.externalLedger)return {Result::ForeignBytes,1};
+                // A peer MinHook sharing this entry (netplay's BattleLog EndScene
+                // hook) disabled/removed and re-created its hook after ours: its
+                // restore wrote back the exact bytes we hooked over, so our JMP is
+                // gone and this detour is unreachable. Re-install on top exactly as
+                // at acquisition. A peer trampoline cannot lead back here: our own
+                // trampoline continues into the preimage chain, so that topology
+                // would already be recursing. Any other foreign image means a peer
+                // layered over our live JMP and its trampoline carries this detour;
+                // those bytes are never rewritten and only admission reopens.
+                if(Matches(r,r.spec.preimage)){
+                    if(!backend_.disable||!backend_.enable)return {Result::MissingBackend,1};
+                    if(epoch_==std::numeric_limits<uint64_t>::max())return {Result::Conflict,1};
+                    r.disableStatus=backend_.disable(target);
+                    if(r.disableStatus!=backend_.ok && r.disableStatus!=backend_.alreadyDisabled)return {Result::BackendFailure,1,r.disableStatus};
+                    r.enableStatus=backend_.enable(target);
+                    if(r.enableStatus!=backend_.ok && r.enableStatus!=backend_.alreadyEnabled)return {Result::BackendFailure,1,r.enableStatus};
+                    ++epoch_;
+                    std::vector<unsigned char> image;
+                    if(!backend_.read(r.spec.rangeStart,r.spec.preimage.size(),image) || image==r.spec.preimage)return {Result::ForeignBytes,1};
+                    r.installed=std::move(image);
+                }
+            }
+            if(!r.admissionOpen){if(epoch_==std::numeric_limits<uint64_t>::max())return {Result::Conflict,1};++epoch_;}
+            r.admissionOpen=true;r.callbacks->admitted.store(true,std::memory_order_release);return {};
+        }
         if(r.state==State::ExternalInstalling)return {Result::Pending,1};
         if(!Matches(r,r.spec.preimage)) return {Result::ForeignBytes,1};
         if(epoch_==std::numeric_limits<uint64_t>::max()) return {Result::Conflict,1};
@@ -229,6 +256,15 @@ Outcome Registry::Enable(void* target){
         r.admissionOpen=true;r.callbacks->admitted.store(true,std::memory_order_release);return {};
     }
     return {Result::Conflict};
+}
+EntryImage Registry::Image(void* target) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for(const auto& r:records_) if(r.spec.target==target){
+        if(r.state==State::Enabled && Matches(r,r.installed))return EntryImage::Installed;
+        if(Matches(r,r.spec.preimage))return EntryImage::Preimage;
+        return EntryImage::Foreign;
+    }
+    return EntryImage::Unknown;
 }
 Outcome Registry::CloseAdmission(const std::string& owner){
     std::lock_guard<std::mutex> lock(mutex_);

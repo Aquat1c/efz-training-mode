@@ -290,6 +290,12 @@ struct DisplayData {
     // Cutter: 0=NORMAL, 1=ALWAYS READY
     int p1SayuriCutterMode;
     int p2SayuriCutterMode;
+    // Auto cutter: 0=OFF, 1=ON (press A for her when the window opens)
+    int p1SayuriAutoCutter;
+    int p2SayuriAutoCutter;
+    // AUTO CUTTER reaction delay in visual frames (0 = earliest legal press)
+    int p1SayuriAutoCutterDelay;
+    int p2SayuriAutoCutterDelay;
 
     // Nanase (Rumi) – Barehanded mode (full swap of normals+specials)
     bool p1RumiBarehanded;
@@ -316,9 +322,16 @@ struct DisplayData {
     bool p2AkikoFreezeCycle;
     bool p1AkikoShowCleanHit;    // show Clean Hit helper overlay when Akiko is P1
     bool p2AkikoShowCleanHit;    // show Clean Hit helper overlay when Akiko is P2
-    // Akiko: new model for Infinite timeslow (freeze on-screen XYZ digits at 000)
+    // Akiko: Infinite timeslow = code patch that stops the time-slow odometer
+    // (TimerFreeze::AkikoTimeslow); no per-frame digit writes.
     bool p1AkikoInfiniteTimeslow;
     bool p2AkikoInfiniteTimeslow;
+    // Akiko: hold the 214214 curse timer (TimerFreeze::AkikoCurse code patch)
+    bool p1AkikoFreezeCurse;
+    bool p2AkikoFreezeCurse;
+    // Mizuka Nagamori: hold the Final Memory timer (TimerFreeze::MizukaFinalMemory)
+    bool p1MizukaFreezeFm;
+    bool p2MizukaFreezeFm;
 
     // Neyuki (Sleepy Nayuki) – Jam count (0..9)
     int  p1NeyukiJamCount;

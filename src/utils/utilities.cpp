@@ -51,6 +51,7 @@
 #include "../include/game/mission/mission_engine.h"
 #include "../include/game/collision_hook.h"
 #include "../include/game/final_memory_patch.h"
+#include "../include/game/timer_freeze_patch.h"
 #include "../include/game/savestate_hook.h"
 #include "../include/input/input_hook.h"         
 #include "../3rdparty/minhook/include/MinHook.h" 
@@ -221,6 +222,10 @@ void ResetDisplayDataToDefaults() {
     displayData.p2SayuriMemoryChoice = 0;  // OFF
     displayData.p1SayuriCutterMode = 0;    // NORMAL
     displayData.p2SayuriCutterMode = 0;    // NORMAL
+    displayData.p1SayuriAutoCutter = 0;    // OFF
+    displayData.p2SayuriAutoCutter = 0;    // OFF
+    displayData.p1SayuriAutoCutterDelay = 0; // earliest press the engine accepts
+    displayData.p2SayuriAutoCutterDelay = 0;
     // Rumi
     displayData.p1RumiBarehanded = false;
     displayData.p2RumiBarehanded = false;
@@ -243,6 +248,11 @@ void ResetDisplayDataToDefaults() {
     displayData.p2AkikoShowCleanHit = false;
     displayData.p1AkikoInfiniteTimeslow = false;
     displayData.p2AkikoInfiniteTimeslow = false;
+    displayData.p1AkikoFreezeCurse = false;
+    displayData.p2AkikoFreezeCurse = false;
+    // Mizuka Nagamori
+    displayData.p1MizukaFreezeFm = false;
+    displayData.p2MizukaFreezeFm = false;
     // Neyuki
     displayData.p1NeyukiJamCount = 0;
     displayData.p2NeyukiJamCount = 0;
@@ -555,7 +565,20 @@ void ResetRuntimeSettingsToDisplayDefaults() {
     SayuriCounter::SetMemory(2, displayData.p2SayuriMemoryChoice, 0);
     SayuriCounter::SetCutter(1, displayData.p1SayuriCutterMode);
     SayuriCounter::SetCutter(2, displayData.p2SayuriCutterMode);
+    SayuriCounter::SetAutoCutter(1, displayData.p1SayuriAutoCutter);
+    SayuriCounter::SetAutoCutter(2, displayData.p2SayuriAutoCutter);
+    SayuriCounter::SetAutoCutterDelay(1, displayData.p1SayuriAutoCutterDelay);
+    SayuriCounter::SetAutoCutterDelay(2, displayData.p2SayuriAutoCutterDelay);
     SayuriCounter::ResetState();
+
+    // Timer freezes are code patches owned by TimerFreeze; push the defaulted
+    // requests so a reset also restores the engine's own countdowns.
+    TimerFreeze::SetRequested(TimerFreeze::AkikoCurse, 1, displayData.p1AkikoFreezeCurse);
+    TimerFreeze::SetRequested(TimerFreeze::AkikoCurse, 2, displayData.p2AkikoFreezeCurse);
+    TimerFreeze::SetRequested(TimerFreeze::AkikoTimeslow, 1, displayData.p1AkikoInfiniteTimeslow);
+    TimerFreeze::SetRequested(TimerFreeze::AkikoTimeslow, 2, displayData.p2AkikoInfiniteTimeslow);
+    TimerFreeze::SetRequested(TimerFreeze::MizukaFinalMemory, 1, displayData.p1MizukaFreezeFm);
+    TimerFreeze::SetRequested(TimerFreeze::MizukaFinalMemory, 2, displayData.p2MizukaFreezeFm);
 }
 }
 
@@ -668,7 +691,19 @@ void ResetPracticeMatchSessionState(const char* reason) {
     ResetRuntimeSettingsToDisplayDefaults();
     ClearAllAutoActionTriggers();
     ResetActionFlags();
-    MacroController::UnswapThenStop();
+    // World-scoped native restores run only against a live Practice world we
+    // may still touch. Once the fighters are gone, the next owner (efz.exe's
+    // mode init or netplay's session init) re-initialises the CPU/AI flags,
+    // regen params and Practice controller itself; writing them here would
+    // land on netplay's freshly built world on this peer only. The efz.exe
+    // control-map block is process-global and is restored whenever we swapped it.
+    const bool worldLive = IsPracticeWorldLive();
+    if (worldLive) {
+        MacroController::UnswapThenStop();
+    } else {
+        (void)SetVanillaSwapInputRouting(false);
+        MacroController::Stop();
+    }
 
     forwardDashFollowup.store(0);
     forwardDashFollowupDashMode.store(false);
@@ -682,12 +717,13 @@ void ResetPracticeMatchSessionState(const char* reason) {
 
     SetDummyAutoBlockMode(DAB_None);
     SetAdaptiveStanceEnabled(false);
-    if (GetCurrentGameMode() == GameMode::Practice && !IsNetplaySuspendActive()) {
+    if (IsPracticeContext()) {
         SetPracticeBlockMode(0);
-        DisablePlayer2InPracticeMode();
     }
-
-    WriteEngineRegenParams(0, 0);
+    if (worldLive) {
+        DisablePlayer2InPracticeMode();
+        WriteEngineRegenParams(0, 0);
+    }
     StopRFFreeze();
     StopRFFreezePlayer(1);
     StopRFFreezePlayer(2);
@@ -745,6 +781,7 @@ void EnableFeatures() {
 
     g_featuresEnabled.store(true);
     const int fmApplied = SyncFinalMemoryBypassForCurrentMode("EnableFeatures");
+    TimerFreeze::SyncForCurrentMode("EnableFeatures");
     if (fmApplied > 0 || detailedLogging.load()) {
         LogOut(
             std::string("[FM_PATCH] EnableFeatures sync")
@@ -785,6 +822,7 @@ void DisableFeatures() {
     
     LogOut("[SYSTEM] Game left valid mode. Disabling patches and overlays.", true);
     const int fmRestored = ForceRestoreFinalMemoryHPBypass("DisableFeatures");
+    TimerFreeze::ForceRestore("DisableFeatures");
     if (fmRestored > 0 || detailedLogging.load()) {
         LogOut(
             std::string("[FM_PATCH] DisableFeatures restore")
@@ -794,11 +832,12 @@ void DisableFeatures() {
             true);
     }
     
-    // CRITICAL: Restore normal control flags when leaving Practice mode
-    // to prevent control swap issues in other modes
+    // Restore normal control flags when leaving Practice mode so a later
+    // offline mode does not inherit a training override. Never once netplay
+    // has published a session or suspend: that world belongs to netplay's init.
     {
         std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
-        if (!g_onlineModeActive.load(std::memory_order_acquire)) {
+        if (IsPracticeContext()) {
             uintptr_t efzBase = GetEFZBase();
             if (efzBase) {
                 uintptr_t gameStatePtr = 0;
@@ -1131,22 +1170,26 @@ void AppendPlayerReadbackSummary(
 } // namespace
 
 void EnterNetplaySuspend() {
-    // Roll back the offline, identity-bound producer while its world is still
-    // eligible for exact cleanup.  Publishing online mode first would make
-    // every later input path refuse the restore and strand authored residue.
+    // Publish the online boundary FIRST. Every data restore in the tree is
+    // gated on g_onlineModeActive, and nothing below may write fighter,
+    // game-state or Practice-controller memory once a session is forming: the
+    // world this suspend interrupts is either already gone (async-host joiner -
+    // netplay deletes the Practice session before its export even reports the
+    // session) or about to be replaced by netplay's own init, so there is no
+    // offline residue left that restoring would help. Writes made here landed
+    // on the host only and desynced the match. Code patches and the efz.exe
+    // control-map block are process-global and stay restored by their own
+    // latched owners regardless of this flag.
     bool wasSuspended = false;
     {
         // Queue publication uses this same mutex and rechecks online mode after
-        // acquiring it. No new P2 generation can slip between rollback and the
-        // online-state publication, and concurrent suspend callers preserve
-        // the original one-winner exchange semantics.
+        // acquiring it, so no new P2 generation can slip past the publication.
         std::lock_guard<std::recursive_mutex> controlLock(g_p2ControlMutex);
-        wasSuspended = g_onlineModeActive.load(std::memory_order_acquire);
+        wasSuspended = g_onlineModeActive.exchange(true, std::memory_order_acq_rel);
+        isOnlineMatch.store(true, std::memory_order_release);
         if (!wasSuspended) {
-            // Drain every offline input owner before publishing the online
-            // boundary.  Their post-publication teardown is deliberately
-            // bookkeeping-only, so authored raw/ring/controller state must be
-            // neutralized while this world still belongs to training mode.
+            // Private cancellation only; each of these is bookkeeping-only
+            // once online mode is published.
             MacroController::Stop();
             KaoriRecoilDuck::CancelAll("entering netplay suspend");
             CancelAllAutoActionChargeFollowups(
@@ -1155,43 +1198,13 @@ void EnterNetplaySuspend() {
             StopBufferFreezingIgnoringTutorialLease();
             (void)ClearMotionInputQueue(1, true);
             (void)ClearMotionInputQueue(2, true);
-            if (!DrainAutoActionNormalPulsesForOwnershipBoundary()) {
-                LogOut("[NETPLAY] Normal-input cleanup remains pending at ownership boundary", true);
-            }
-            CancelP2AutoActionMotionTransaction("entering netplay suspend");
-            // Cleanup normally completes in one pass; retry a retained
-            // fail-closed cleanup obligation before netplay takes controller
-            // ownership. The later hook-disable path retries once more.
-            for (int retry = 0;
-                 retry < 2 && IsP2AutoActionMotionTransactionActive();
-                 ++retry) {
-                CancelP2AutoActionMotionTransaction(
-                    "entering netplay suspend cleanup retry");
-            }
-            if (IsP2AutoActionMotionTransactionActive()) {
-                LogOut("[NETPLAY] P2 input cleanup remains pending while suspension is published", true);
-            }
-            // The transaction owners above clean only their attributed spans.
-            // A completed wake macro can also leave an intentionally retained
-            // native command token/ring until its post-wake epilogue. Netplay
-            // is a hard ownership boundary, so scrub both complete offline
-            // fighter lanes now while the shared publication lock still blocks
-            // every new mod-owned producer. After online mode is published no
-            // cleanup path is allowed to write these fields.
-            (void)FullCleanupAfterToggle(1);
-            (void)FullCleanupAfterToggle(2);
+            (void)DrainAutoActionNormalPulsesForOwnershipBoundary();
+            CancelP2AutoActionMotionTransaction(
+                "netplay ownership boundary published");
             if (g_p2ControlOverridden) {
                 RestoreP2ControlState();
             }
         }
-        g_onlineModeActive.store(true, std::memory_order_release);
-        isOnlineMatch.store(true, std::memory_order_release);
-
-        // A failed pre-publication cleanup must not survive as a deferred
-        // memory writer. CleanupP2MotionTxnLocked sees the published online
-        // flag and retires any remaining offline obligation without writes.
-        CancelP2AutoActionMotionTransaction(
-            "netplay ownership boundary published");
     }
     if (wasSuspended) {
         return;
@@ -1212,6 +1225,7 @@ void EnterNetplaySuspend() {
     LogOut(oss.str(), true);
     RequestRuntimeLifecycleResync("entered netplay suspend");
     const int fmRestored = ForceRestoreFinalMemoryHPBypass("EnterNetplaySuspend");
+    TimerFreeze::ForceRestore("EnterNetplaySuspend");
 
     ImmediateInput::Stop();
     StopBufferFreezing();
@@ -1220,7 +1234,12 @@ void EnterNetplaySuspend() {
     SetCollisionHookActive(false);
     PauseIntegration::SetRuntimeHooksActive(false);
     DirectDrawHook::SetD3D9Active(false);
+    // Leave the game window's WndProc chain before netplay re-takes it on the
+    // recovery menu; a foreign proc on top turns its re-take into a ring.
+    ImGuiImpl::DetachWndProc();
     SavestateHook::Uninstall();
+    HudDisable::SetAdmitted(false);
+    ClearBattleFrontendRouting();
 
     if (g_featuresEnabled.load()) {
         DisableFeatures();
@@ -1266,9 +1285,8 @@ void EnterNetplaySuspend() {
 }
 
 void ExitNetplaySuspend() {
-    const bool wasSuspended = g_onlineModeActive.exchange(false);
-    isOnlineMatch.store(false, std::memory_order_release);
-    if (!wasSuspended) {
+    if (!g_onlineModeActive.load(std::memory_order_acquire)) {
+        isOnlineMatch.store(false, std::memory_order_release);
         return;
     }
 
@@ -1298,12 +1316,20 @@ void ExitNetplaySuspend() {
     CharacterSettings::InvalidateAllCharacterPointerCaches();
     ResetPracticeMatchSessionState("ExitNetplaySuspend");
 
+    // Every reset above ran with online mode still published, so none of them
+    // could write into the world netplay is handing back. Only now may the
+    // Practice hooks be re-admitted.
+    g_onlineModeActive.store(false, std::memory_order_release);
+    isOnlineMatch.store(false, std::memory_order_release);
+
     DirectDrawHook::ClearAllMessages();
     ResetOverlayTrackingIds();
+    HudDisable::SetAdmitted(true);
     InstallInputHook();
     InstallCollisionHook();
     PauseIntegration::SetRuntimeHooksActive(true);
     DirectDrawHook::SetD3D9Active(true);
+    ImGuiImpl::AttachWndProc();
     SavestateHook::Install();
 
     LogOut(
@@ -1359,9 +1385,9 @@ void AuditNetplayMenuEntryState() {
     DirectDrawHook::ClearAllMessages();
     ResetOverlayTrackingIds();
 
-    // Online ownership has already been published.  This audit is strictly
-    // read-only: all writable training owners were drained in
-    // EnterNetplaySuspend before publication.
+    // Online ownership has already been published, so every Stop/Clear above is
+    // bookkeeping-only (each checks g_onlineModeActive before writing). From
+    // here on the audit only reads.
     bool cleanupAttempted[3] = {false, false, false};
     bool cleanupSucceeded[3] = {false, false, false};
     NetplayMenuPlayerReadback readback[3];
@@ -2425,8 +2451,8 @@ void LifecycleWatcherThread() {
     };
 
     auto isValidMode = [](GameMode mode) -> bool {
-        const Config::Settings& cfg = Config::GetSettings();
-        return !cfg.restrictToPracticeMode || (mode == GameMode::Practice);
+        // Any Mode is gone: training lives in Practice only.
+        return mode == GameMode::Practice;
     };
 
     Snapshot previous = {};

@@ -46,6 +46,9 @@ enum GroupMask : unsigned {
 
 void Install();   // create + enable all hooks (idempotent); safe at startup
 void Remove();    // disable + remove hooks
+// Netplay boundary: closed hooks pass every call straight through (no seam,
+// no gate rewrite, no blit filtering); reopened on resume.
+void SetAdmitted(bool admitted);
 
 void SetHidden(bool hidden);   // whole HUD (master)
 bool IsHidden();

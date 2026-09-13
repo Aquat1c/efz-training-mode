@@ -28,6 +28,10 @@ struct Intent {
     RelativeDirection direction{RelativeDirection::Neutral};
     uint8_t button{0};
     bool airborne{false};
+    // Non-zero: the consumer witness accepts exactly this move ID instead of
+    // the universal normal for the button (a guard cancel such as Sayuri's
+    // Magical Cutter 258 comes out of the same press but is not 5A).
+    short expectedMove{0};
 
     constexpr explicit operator bool() const {
         const uint8_t attack = static_cast<uint8_t>(button & kAttackButtons);

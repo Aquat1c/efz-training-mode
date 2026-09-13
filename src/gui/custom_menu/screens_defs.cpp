@@ -36,6 +36,7 @@
 #include "../include/game/character_action_catalog.h"
 #include "../include/game/character_hotswap.h"
 #include "../include/game/sayuri_counter.h"
+#include "../include/game/timer_freeze_patch.h"
 #include "../include/gui/overlay.h"
 #include "../include/gui/framebar.h"
 #include "../include/utils/controller_names.h"
@@ -518,6 +519,11 @@ const char* const kDoppelTechStageChoices[4] = { "ALL", "STAGE 1", "STAGE 2", "S
 // block, or only after the move she remembers. The REMEMBERED MOVE row's item
 // list is rebuilt per opponent and lives in the SayuriCounter module.
 const char* const kSayuriCutterChoices[2] = { "NORMAL", "ALWAYS READY" };
+// Whether the mod presses A for her when the cut-out window opens (the only way
+// a CPU dummy ever performs Magical Cutter).
+const char* const kSayuriAutoCutterChoices[2] = { "OFF", "ON" };
+bool HideP1SayuriCutterDelay() { return ImGuiGui::guiState.localData.p1SayuriAutoCutter == 0; }
+bool HideP2SayuriCutterDelay() { return ImGuiGui::guiState.localData.p2SayuriAutoCutter == 0; }
 const char* const kMaiStatusChoices[5] = { "INACTIVE", "ACTIVE GHOST", "UNSUMMON", "CHARGING", "AWAKENING" };
 
 const char* const kTriggerMotionChoices[] = {
@@ -1756,9 +1762,6 @@ void OnSavestateLoadCustomPalettes() {
 void OnCheckForUpdates() {
     PersistBool("General", "checkForUpdates", MutableSettings().checkForUpdates);
 }
-void OnRestrictPractice() {
-    PersistBool("General", "restrictToPracticeMode", MutableSettings().restrictToPracticeMode);
-}
 void OnBgmVolume() {
     ExtendedConfigBridge::PublishAudioLaneSetting(true, MutableSettings().bgmVolumePercent);
     // One coalesced audio apply request is published with the tuple.
@@ -1784,7 +1787,8 @@ const char* ValAudioSettings() {
     return buf;
 }
 const char* ValRecoverySettings()  { return MutableSettings().crRequireBothNeutral ? "NEUTRAL" : "ANY"; }
-const char* ValPracticeSettings()  { return MutableSettings().restrictToPracticeMode ? "PRACTICE" : "ANY MODE"; }
+// Any Mode is gone: training lives in Practice only, whatever an old INI says.
+const char* ValPracticeSettings()  { return "PRACTICE"; }
 
 bool CollisionProjectileOptionsHidden() {
     return !MutableSettings().collisionDisplayProjectileInteractions;
@@ -1922,7 +1926,6 @@ Row* BuildSettingsPracticeRows(int& count) {
 
     s_rows[n++] = Header("PRACTICE");
     s_rows[n++] = IntNum ("AUTO-BLOCK TIMEOUT (MS)",   &s.autoBlockNeutralTimeoutMs, 0, 60000, 500, 5000, OnAutoBlockTimeout);
-    s_rows[n++] = Toggle ("RESTRICT TO PRACTICE",      &s.restrictToPracticeMode, OnRestrictPractice);
     count = n;
     return s_rows;
 }
@@ -4980,7 +4983,7 @@ Row* BuildHelpCharacterRows(int& count) {
     s_rows[n++] = Info("Ikumi: set Blood Stock, Genocide Timer, and Level Gauge.");
     s_rows[n++] = Info("Misuzu: Feathers sets her stock. Poison Level 0 is off, Poison Timer counts the poison down, and Infinite Poison pins that timer at max.");
     s_rows[n++] = Info("Mishio: choose Element and set Awaken Timer; the match-wide locks keep element and awakened state from decaying.");
-    s_rows[n++] = Info("Akiko: set Bullet Cycle, Freeze Cycle, Show Clean Hit, Time-Slow Trigger, and Infinite Timeslow.");
+    s_rows[n++] = Info("Akiko: set Bullet Cycle, Freeze Cycle, Show Clean Hit, and read the Time-Slow Trigger. Infinite Timeslow stops the 641236 time-slow counter so the slow never winds down, and Freeze Curse Timer holds the 214214 curse timer once a curse has landed so the opponent stays at that curse level (A: no dashes, B: no specials or supers, C: no jumps). Both are patches on her own tick rather than memory writes: the counters stop where they are, turning a row off resumes them, and the round reset still clears everything. They apply to whichever side plays Akiko.");
     s_rows[n++] = Info("Nayuki (Awake): Snowbunny Timer sets how long the bunnies last. Infinite Snow pins it at max.");
     s_rows[n++] = Info("Nayuki (Asleep): Jam Count sets her stored jams. Lock Jam Count restores that count whenever she is actionable or waking up.");
     s_rows[n++] = Info("Kano: Magic sets the stored magic value, and Lock Magic keeps it from being spent.");
@@ -4990,6 +4993,9 @@ Row* BuildHelpCharacterRows(int& count) {
     s_rows[n++] = Info("Doppel Tech Stage picks where that escape is allowed. Stage 1 is the capture itself, and escaping there stops Maiden Crash and Maiden Fuji Yama. Stage 2 is Maiden Crash, and escaping there stops Relentless Granite-Breaking Barrage and Exploding Inner-Soul Fist. Stage 3 is those two supers, and escaping there stops Maiden Finger, Falling Maiden, Human Floor-Burning Polisher and Maiden Volcannon. Outside the chosen stage the opponent escapes only if they input it themselves.");
     s_rows[n++] = Info("Sayuri: Remembered Move sets the attack she has countered and is waiting for. Whenever she blocks that same attack standing or crouching she flashes white, and A, B or C cuts straight out of the blockstun into Magical Cutter. Off leaves it to her own counter, Nothing empties it so you can practise baiting, Last Blocked keeps loading whatever she just blocked so it is ready the next time, and picking a move from the list stands in for landing the counter and holds it there so a stray counter cannot replace it. The list is the current opponent's moves and is rebuilt when they change. The cut-out needs a fresh press: a button already held through the block freeze produces nothing, so let go and press again. A dummy Sayuri on auto-block will keep loading and arming on her own, which is usually what you want.");
     s_rows[n++] = Info("Sayuri: Magical Cutter set to Always Ready opens that same window on every standing or crouching block, no matter what she remembers. Air blocking never opens the window, and it stops working once Akiko's debuff has stacked up on her.");
+    s_rows[n++] = Info("Sayuri: Auto Cutter presses A for her once the window opens - her block freeze over, no superflash running - so a dummy Sayuri actually cuts out and you can test which strings leave the window open. It is the only way a CPU dummy ever performs the Cutter; Off leaves the press to whoever controls her.");
+    s_rows[n++] = Info("Sayuri: Cutter Delay is how many frames she waits after the window opens before pressing. 0 is the earliest press the game accepts, the first frame after the block freeze, which no player can do on reaction; raise it to stand in for a real reaction. If the delay outlasts the blockstun she simply does not cut out.");
+    s_rows[n++] = Info("Mizuka: Freeze FM Timer holds her Final Memory timer once the FM is running, so the opponent stays frozen and the FM never ends until you turn it off or the round ends. Her meter stays pinned at 0 and no further poems spawn while it is held; turning it off resumes the countdown from where it stopped. Patch on the FM tick, no memory writes; applies to whichever side plays Mizuka.");
     s_rows[n++] = Info("Mio: Stance picks Short or Long. Lock Stance holds her in the stance you picked.");
     s_rows[n++] = Info("Mai: Status sets Inactive, Active Ghost, Unsummon, Charging, or Awakening. Ghost Time, Charge Timer, and Awaken Timer set that duration, Infinite Ghost/Charge/Awaken hold it, and No Charge Cooldown finishes a charge instantly.");
     s_rows[n++] = Info("Mai also has Force Summon and Force Despawn; Aggressive Summon lets Force Summon work during Unsummon. Ghost Target X/Y with Apply Ghost Position places the ghost exactly.");
@@ -5582,6 +5588,7 @@ bool CharHasCustomRows(int charId) {
         case CHAR_ID_NAYUKI:
         case CHAR_ID_KANO:
         case CHAR_ID_SAYURI:
+        case CHAR_ID_MIZUKA:
         case CHAR_ID_NANASE:
         case CHAR_ID_EXNANASE:
         case CHAR_ID_MIO:
@@ -5705,13 +5712,15 @@ void AddAkikoRows(Row* rows, int& n, DisplayData& d, int player) {
         rows[n++] = Toggle("FREEZE CYCLE", &d.p1AkikoFreezeCycle, OnAutoApply);
         rows[n++] = Toggle("SHOW CLEAN HIT", &d.p1AkikoShowCleanHit, OnAutoApply);
         rows[n++] = ChoicesRow("TIME-SLOW TRIGGER", &d.p1AkikoTimeslowTrigger, kAkikoSlowChoices, 4, OnAutoApply);
-        rows[n++] = Toggle("INFINITE TIMESLOW", &d.p1AkikoInfiniteTimeslow, OnAutoApply);
+        rows[n++] = WithHelp(Toggle("INFINITE TIMESLOW", &d.p1AkikoInfiniteTimeslow, OnAutoApply), "Stops the time-slow counter, so a 641236 slow never winds down. Patch on her tick, no memory writes.");
+        rows[n++] = WithHelp(Toggle("FREEZE CURSE TIMER", &d.p1AkikoFreezeCurse, OnAutoApply), "Holds the 214214 curse timer once a curse lands, so the opponent stays at that curse level.");
     } else {
         rows[n++] = WithHelp(ChoicesRow("BULLET CYCLE", &d.p2AkikoBulletCycle, kAkikoBulletChoices, 3, OnAutoApply), "Which bullets 236A and 236B throw next. Using either one advances the cycle; Freeze Cycle holds it in place.");
         rows[n++] = Toggle("FREEZE CYCLE", &d.p2AkikoFreezeCycle, OnAutoApply);
         rows[n++] = Toggle("SHOW CLEAN HIT", &d.p2AkikoShowCleanHit, OnAutoApply);
         rows[n++] = ChoicesRow("TIME-SLOW TRIGGER", &d.p2AkikoTimeslowTrigger, kAkikoSlowChoices, 4, OnAutoApply);
-        rows[n++] = Toggle("INFINITE TIMESLOW", &d.p2AkikoInfiniteTimeslow, OnAutoApply);
+        rows[n++] = WithHelp(Toggle("INFINITE TIMESLOW", &d.p2AkikoInfiniteTimeslow, OnAutoApply), "Stops the time-slow counter, so a 641236 slow never winds down. Patch on her tick, no memory writes.");
+        rows[n++] = WithHelp(Toggle("FREEZE CURSE TIMER", &d.p2AkikoFreezeCurse, OnAutoApply), "Holds the 214214 curse timer once a curse lands, so the opponent stays at that curse level.");
     }
 }
 
@@ -5822,6 +5831,19 @@ void AddSayuriRows(Row* rows, int& n, DisplayData& d, int player) {
                    player == 1 ? &d.p1SayuriCutterMode : &d.p2SayuriCutterMode,
                    kSayuriCutterChoices, 2, OnAutoApply),
         "Always Ready opens her cut-out window on every standing or crouching block.");
+
+    rows[n++] = WithHelp(
+        ChoicesRow("AUTO CUTTER",
+                   player == 1 ? &d.p1SayuriAutoCutter : &d.p2SayuriAutoCutter,
+                   kSayuriAutoCutterChoices, 2, OnAutoApply),
+        "On presses A for her once the cut-out window opens, so a dummy Sayuri actually cuts out.");
+
+    rows[n++] = WithHelp(
+        IntNum("CUTTER DELAY",
+               player == 1 ? &d.p1SayuriAutoCutterDelay : &d.p2SayuriAutoCutterDelay,
+               0, SayuriCounter::kAutoCutterDelayMax, 1, 5, OnAutoApply, nullptr,
+               player == 1 ? HideP1SayuriCutterDelay : HideP2SayuriCutterDelay),
+        "Frames she waits after the window opens before pressing; 0 is the earliest press the game accepts.");
 }
 
 void AddMioRows(Row* rows, int& n, DisplayData& d, int player) {
@@ -5882,6 +5904,12 @@ void AddMinagiRows(Row* rows, int& n, DisplayData& d, int player) {
     }
 }
 
+void AddNagamoriRows(Row* rows, int& n, DisplayData& d, int player) {
+    rows[n++] = WithHelp(
+        Toggle("FREEZE FM TIMER", player == 1 ? &d.p1MizukaFreezeFm : &d.p2MizukaFreezeFm, OnAutoApply),
+        "Holds her Final Memory timer once the FM runs: the opponent stays frozen and the FM never ends until you turn it off.");
+}
+
 bool AddPlayerCharacterRows(Row* rows, int& n, DisplayData& d, int player, int charId, const char* rawName) {
     if (!CharHasCustomRows(charId)) return false;
 
@@ -5900,6 +5928,7 @@ bool AddPlayerCharacterRows(Row* rows, int& n, DisplayData& d, int player, int c
         case CHAR_ID_NAYUKI:   AddNeyukiRows(rows, n, d, player); break;
         case CHAR_ID_KANO:     AddKanoRows(rows, n, d, player); break;
         case CHAR_ID_SAYURI:   AddSayuriRows(rows, n, d, player); break;
+        case CHAR_ID_MIZUKA:   AddNagamoriRows(rows, n, d, player); break;
         case CHAR_ID_NANASE:   AddRumiRows(rows, n, d, player); break;
         case CHAR_ID_EXNANASE: AddDoppelRows(rows, n, d, player); break;
         case CHAR_ID_MIO:      AddMioRows(rows, n, d, player); break;
