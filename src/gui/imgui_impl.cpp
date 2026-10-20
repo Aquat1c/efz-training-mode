@@ -1205,6 +1205,8 @@ namespace ImGuiImpl {
             ShowWindow(hwnd, SW_HIDE);
             UpdateWindow(hwnd);
             g_externalFallbackReady.store(true, std::memory_order_release);
+            int idleFrames = 0;
+            int notResetCount = 0;
 
             while (!g_externalFallbackExit.load(std::memory_order_acquire) && !g_isShuttingDown.load(std::memory_order_relaxed)) {
                 MSG msg;
@@ -1222,9 +1224,45 @@ namespace ImGuiImpl {
                 }
 
                 if (!g_imguiVisible || !XInputShim::IsPollingActive()) {
+                    // Cooperative exclusive fullscreen: after a short idle
+                    // grace, release the fallback device entirely so the
+                    // GAME device can own the adapter exclusively (a second
+                    // live D3D9 device blocks the game's exclusive Reset).
+                    ++idleFrames;
+                    if (device && idleFrames > 60) {
+                        ImGui_ImplDX9_InvalidateDeviceObjects();
+                        device->Release();
+                        device = nullptr;
+                        d3d9->Release();
+                        d3d9 = nullptr;
+                        LogOut("[IMGUI] fallback device released while idle "
+                               "(cooperative exclusive fullscreen)", true);
+                    }
                     Sleep(16);
                     continue;
                 }
+
+                if (!device) {
+                    idleFrames = 0;
+                    d3d9 = Direct3DCreate9(D3D_SDK_VERSION);
+                    if (!d3d9) {
+                        Sleep(250);
+                        continue;
+                    }
+                    if (FAILED(d3d9->CreateDevice(
+                            D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd,
+                            D3DCREATE_SOFTWARE_VERTEXPROCESSING |
+                                D3DCREATE_FPU_PRESERVE,
+                            &d3dpp, &device)) ||
+                        !device) {
+                        d3d9->Release();
+                        d3d9 = nullptr;
+                        Sleep(250);
+                        continue;
+                    }
+                    ImGui_ImplDX9_CreateDeviceObjects();
+                }
+                idleFrames = 0;
 
                 HRESULT coop = device->TestCooperativeLevel();
                 if (coop == D3DERR_DEVICELOST) {
@@ -1232,14 +1270,31 @@ namespace ImGuiImpl {
                     continue;
                 }
                 if (coop == D3DERR_DEVICENOTRESET) {
+                    // While the game device holds exclusive fullscreen our
+                    // windowed reset cannot succeed; after repeated
+                    // failures stand down entirely instead of fighting the
+                    // game for the adapter.
+                    if (++notResetCount > 30) {
+                        ImGui_ImplDX9_InvalidateDeviceObjects();
+                        device->Release();
+                        device = nullptr;
+                        d3d9->Release();
+                        d3d9 = nullptr;
+                        notResetCount = 0;
+                        LogOut("[IMGUI] fallback device stood down (game "
+                               "exclusive fullscreen active)", true);
+                        continue;
+                    }
                     ImGui_ImplDX9_InvalidateDeviceObjects();
                     if (SUCCEEDED(device->Reset(&d3dpp))) {
                         ImGui_ImplDX9_CreateDeviceObjects();
+                        notResetCount = 0;
                     } else {
                         Sleep(16);
                     }
                     continue;
                 }
+                notResetCount = 0;
 
                 device->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_XRGB(12, 12, 16), 1.0f, 0);
                 if (SUCCEEDED(device->BeginScene())) {
