@@ -293,6 +293,16 @@ set_property(TARGET efz_training_mode PROPERTY
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(overlay_reset_gate_tests tests/overlay_reset_gate_tests.cpp)
+    target_include_directories(overlay_reset_gate_tests PRIVATE include)
+    add_test(NAME overlay_reset_gate_tests COMMAND overlay_reset_gate_tests)
+    add_executable(overlay_context_scope_tests
+        tests/overlay_context_scope_tests.cpp
+        ${IMGUI_DIR}/imgui.cpp ${IMGUI_DIR}/imgui_draw.cpp
+        ${IMGUI_DIR}/imgui_tables.cpp ${IMGUI_DIR}/imgui_widgets.cpp)
+    target_include_directories(overlay_context_scope_tests PRIVATE include ${IMGUI_DIR})
+    add_test(NAME overlay_context_scope_tests COMMAND overlay_context_scope_tests)
+
     # F05 checkpoint components; native output installation is not enabled yet.
     add_executable(audio_output_lifetime_tests
         tests/practice_isolation/audio_output_lifetime_tests.cpp)
