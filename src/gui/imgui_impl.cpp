@@ -1,4 +1,6 @@
 #include "../include/gui/imgui_impl.h"
+#include "compat/overlay_reset_api.h"
+#include "compat/overlay_context_scope.h"
 #include "../include/utils/xinput_shim.h"
 #include "../include/core/logger.h"
 #include "../include/gui/imgui_gui.h"
@@ -15,6 +17,7 @@ namespace PracticeOverlayGate { void SetMenuVisible(bool); }
 #include "../include/utils/switch_players.h"
 #include "../include/utils/xp_compat.h"
 #include <stdexcept>
+#include <optional>
 #include <Xinput.h>
 #include <algorithm>
 #include "../include/utils/pause_integration.h"
@@ -38,6 +41,10 @@ static std::atomic<bool> s_imguiInitInProgress{false};
 
 // Global state
 static bool g_imguiInitialized = false;
+static ImGuiContext* g_imguiContext = nullptr;
+static DWORD g_imguiContextThread = 0;
+static std::atomic<DWORD> g_imguiWorkThread{0};
+static EfzOverlayResetGate g_resetGate;
 // Made non-static to satisfy legacy external references during LTCG; accessor functions should be preferred.
 bool g_imguiVisible = false;
 namespace CharacterSettings {
@@ -81,6 +88,65 @@ static std::atomic<bool> g_externalFallbackInitFailed{false};
 static std::atomic<bool> g_externalFallbackExit{false};
 static HWND g_externalFallbackWindow = nullptr;
 static const char* kFallbackWindowClassName = "EFZ_TM_IMGUI_FALLBACK";
+
+namespace {
+HRESULT ResetGateResult(EfzOverlayResetGate::Result result) {
+    switch (result) {
+    case EfzOverlayResetGate::Result::Ok: return S_OK;
+    case EfzOverlayResetGate::Result::InvalidArgument: return E_INVALIDARG;
+    case EfzOverlayResetGate::Result::WrongThread: return RPC_E_WRONG_THREAD;
+    default: return HRESULT_FROM_WIN32(ERROR_BUSY);
+    }
+}
+
+HRESULT __cdecl BeforeOverlayReset(void* device, uint32_t epoch) {
+    EfzOverlayResetGate::Access access(g_resetGate);
+    if (!access.Acquired()) return HRESULT_FROM_WIN32(ERROR_BUSY);
+    bool invalidate = false;
+    const auto result = g_resetGate.BeforeReset(device, epoch, GetCurrentThreadId(), invalidate);
+    if (result != EfzOverlayResetGate::Result::Ok) return ResetGateResult(result);
+    if (invalidate) {
+        if (!g_imguiContext || !g_imguiInitialized) return E_UNEXPECTED;
+        EfzScopedImGuiContext context(g_imguiContext);
+        // The owner clears its own VB, IB and font pointers. Keep the context,
+        // Win32 backend, menu state and WndProc chain intact.
+        ImGui_ImplDX9_InvalidateDeviceObjects();
+        g_resetGate.DidInvalidateBackend();
+    }
+    return S_OK;
+}
+
+HRESULT __cdecl AfterOverlayReset(void* device, uint32_t epoch, uint32_t ready) {
+    EfzOverlayResetGate::Access access(g_resetGate);
+    if (!access.Acquired()) return HRESULT_FROM_WIN32(ERROR_BUSY);
+    if (ready > 1) return E_INVALIDARG;
+    const auto result = g_resetGate.AfterReset(device, epoch, GetCurrentThreadId(), 0);
+    if (result != EfzOverlayResetGate::Result::Ok) return ResetGateResult(result);
+    if (!ready) return S_OK;
+    if (g_resetGate.BoundDevice() == device) {
+        if (!g_resetGate.BackendInvalidatedFor(device)) return HRESULT_FROM_WIN32(ERROR_BUSY);
+        if (!g_imguiContext || !g_imguiInitialized) return E_UNEXPECTED;
+        const HRESULT cooperative = static_cast<IDirect3DDevice9*>(device)->TestCooperativeLevel();
+        if (cooperative != D3D_OK) return cooperative;
+        EfzScopedImGuiContext context(g_imguiContext);
+        if (!ImGui_ImplDX9_CreateDeviceObjects()) {
+            // Creation may have allocated a partial font texture. The owner
+            // clears it before a subsequent Reset attempt.
+            ImGui_ImplDX9_InvalidateDeviceObjects();
+            return E_FAIL;
+        }
+    }
+    return ResetGateResult(g_resetGate.AfterReset(device, epoch, GetCurrentThreadId(), 1));
+}
+} // namespace
+
+extern "C" __declspec(dllexport) const EfzOverlayResetApiV1* __cdecl
+EFZ_QueryOverlayResetApiV1(void) {
+    static const EfzOverlayResetApiV1 api = {
+        sizeof(EfzOverlayResetApiV1), 1, &BeforeOverlayReset, &AfterOverlayReset
+    };
+    return &api;
+}
 
 // Virtual cursor/gamepad state
 static bool g_useVirtualCursor = false;
@@ -757,8 +823,15 @@ LRESULT CALLBACK ImGuiWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     }
     WndProcVisitScope visit(hWnd, msg, wParam, lParam);
 
-    if (!g_imguiInitialized || !TrainingUiInputActive()) {
-        return CallWindowProc(g_originalWndProc, hWnd, msg, wParam, lParam);
+    ImGuiImpl::DeviceRenderScope input;
+    const auto forward = [&]() -> LRESULT {
+        input.Release();
+        return g_originalWndProc
+            ? CallWindowProc(g_originalWndProc, hWnd, msg, wParam, lParam)
+            : DefWindowProc(hWnd, msg, wParam, lParam);
+    };
+    if (!input.Admitted() || !g_imguiInitialized || !TrainingUiInputActive()) {
+        return forward();
     }
 
     // When our UI is visible, block directional keyboard events from reaching
@@ -771,7 +844,7 @@ LRESULT CALLBACK ImGuiWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     if (g_imguiVisible && (msg == WM_KEYDOWN || msg == WM_KEYUP)) {
         if (wParam == VK_UP || wParam == VK_DOWN || wParam == VK_LEFT || wParam == VK_RIGHT) {
             // Still pass to game so non-ImGui systems aren't starved
-            return CallWindowProc(g_originalWndProc, hWnd, msg, wParam, lParam);
+            return forward();
         }
     }
 
@@ -788,7 +861,7 @@ LRESULT CALLBACK ImGuiWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         }
     }
 
-    return CallWindowProc(g_originalWndProc, hWnd, msg, wParam, lParam);
+    return forward();
 }
 
 LRESULT CALLBACK FallbackWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -810,6 +883,32 @@ LRESULT CALLBACK FallbackWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 }
 
 namespace ImGuiImpl {
+    DeviceRenderScope::DeviceRenderScope(IDirect3DDevice9* device)
+        : access_(g_resetGate) {
+        if (!access_.Acquired()) return;
+        if (!device) device = g_d3dDevice;
+        if (!g_resetGate.CanRender(device, GetCurrentThreadId())
+            || (g_imguiContext && g_imguiContextThread != GetCurrentThreadId())) {
+            access_.Release();
+            return;
+        }
+        previousContext_ = ImGui::GetCurrentContext();
+        if (g_imguiContext) ImGui::SetCurrentContext(g_imguiContext);
+        g_imguiWorkThread.store(GetCurrentThreadId(), std::memory_order_release);
+        admitted_ = true;
+    }
+
+    DeviceRenderScope::~DeviceRenderScope() { Release(); }
+
+    void DeviceRenderScope::Release() {
+        if (admitted_) {
+            g_imguiWorkThread.store(0, std::memory_order_release);
+            ImGui::SetCurrentContext(previousContext_);
+            admitted_ = false;
+        }
+        access_.Release();
+    }
+
     // Get DPI scale factor for the window
     static float GetDpiScale() {
         HWND hwnd = GetActiveHostWindow();
@@ -909,19 +1008,31 @@ namespace ImGuiImpl {
     }
     namespace {
         bool InitializeForHost(IDirect3DDevice9* device, HWND hostWindow, bool hookWndProc, bool externalFallback) {
+            if (!g_resetGate.CanRender(device, GetCurrentThreadId())) return false;
             if (g_imguiInitialized) {
-                return g_externalFallbackHost == externalFallback;
+                if (g_externalFallbackHost != externalFallback || g_imguiHostWindow != hostWindow)
+                    return false;
+                if (g_d3dDevice == device) return true;
+                // A new device for the same host rebinds only our renderer
+                // backend, on its owner thread, preserving context and input.
+                ImGui::SetCurrentContext(g_imguiContext);
+                if (g_d3dDevice) ImGui_ImplDX9_Shutdown();
+                g_resetGate.UnbindBackend();
+                g_d3dDevice = nullptr;
+                if (!ImGui_ImplDX9_Init(device)) return false;
+                g_d3dDevice = device;
+                return g_resetGate.BindBackend(device, GetCurrentThreadId());
             }
 
             bool expected = false;
             if (!s_imguiInitInProgress.compare_exchange_strong(expected, true)) {
-                Sleep(50);
-                return g_imguiInitialized && g_externalFallbackHost == externalFallback;
+                return false;
             }
 
             if (g_imguiInitialized) {
                 s_imguiInitInProgress.store(false);
-                return g_externalFallbackHost == externalFallback;
+                return g_externalFallbackHost == externalFallback
+                    && g_d3dDevice == device && g_imguiHostWindow == hostWindow;
             }
 
             if (!device) {
@@ -947,7 +1058,9 @@ namespace ImGuiImpl {
             // An injected overlay inherits the host's DPI policy.
 
             IMGUI_CHECKVERSION();
-            ImGui::CreateContext();
+            g_imguiContext = ImGui::CreateContext();
+            g_imguiContextThread = GetCurrentThreadId();
+            ImGui::SetCurrentContext(g_imguiContext);
             createdContext = true;
             ImGuiIO& io = ImGui::GetIO(); (void)io;
 
@@ -972,7 +1085,9 @@ namespace ImGuiImpl {
 
             if (!ImGui_ImplWin32_Init(hostWindow)) {
                 LogOut("[IMGUI] Error: ImGui_ImplWin32_Init failed", true);
-                ImGui::DestroyContext();
+                ImGui::DestroyContext(g_imguiContext);
+                g_imguiContext = nullptr;
+                g_imguiContextThread = 0;
                 g_d3dDevice = nullptr;
                 g_imguiHostWindow = nullptr;
                 g_externalFallbackHost = false;
@@ -983,7 +1098,9 @@ namespace ImGuiImpl {
             if (!ImGui_ImplDX9_Init(device)) {
                 LogOut("[IMGUI] Error: ImGui_ImplDX9_Init failed", true);
                 ImGui_ImplWin32_Shutdown();
-                ImGui::DestroyContext();
+                ImGui::DestroyContext(g_imguiContext);
+                g_imguiContext = nullptr;
+                g_imguiContextThread = 0;
                 g_d3dDevice = nullptr;
                 g_imguiHostWindow = nullptr;
                 g_externalFallbackHost = false;
@@ -1006,7 +1123,9 @@ namespace ImGuiImpl {
                     ImGui_ImplDX9_Shutdown();
                     ImGui_ImplWin32_Shutdown();
                     if (createdContext) {
-                        ImGui::DestroyContext();
+                        ImGui::DestroyContext(g_imguiContext);
+                        g_imguiContext = nullptr;
+                        g_imguiContextThread = 0;
                     }
                     g_d3dDevice = nullptr;
                     g_imguiHostWindow = nullptr;
@@ -1023,15 +1142,28 @@ namespace ImGuiImpl {
             ImGuiGui::Initialize();
 
             g_imguiInitialized = true;
+            g_resetGate.BindBackend(device, GetCurrentThreadId());
             s_imguiInitInProgress.store(false);
             LogOut(std::string("[IMGUI] ImGui initialized successfully for ") + (externalFallback ? "fallback window" : "game window"), true);
             return true;
         }
 
         void SetVisibilityInternal(bool visible) {
+            // Hotkeys can change visibility outside EndScene, while menu
+            // buttons do so inside an admitted frame. Select our context in
+            // both cases; a fallback-window caller on another thread changes
+            // visibility only and leaves ImGui input to the host thread.
+            const DWORD thread = GetCurrentThreadId();
+            const bool inOwnedFrame = g_imguiWorkThread.load(std::memory_order_acquire) == thread;
+            EfzOverlayResetGate::Access access(g_resetGate);
+            const bool useContext = inOwnedFrame || (access.Acquired()
+                && g_resetGate.CanRender(g_d3dDevice, thread)
+                && g_imguiContext && g_imguiContextThread == thread);
+            std::optional<EfzScopedImGuiContext> context;
+            if (useContext) context.emplace(g_imguiContext);
             const bool wasVisible = g_imguiVisible;
             g_imguiVisible = visible;
-            if (wasVisible != visible && ImGui::GetCurrentContext()) {
+            if (wasVisible != visible && useContext) {
                 ImGuiIO& io = ImGui::GetIO();
                 io.ClearEventsQueue();
                 io.ClearInputKeys();
@@ -1057,13 +1189,13 @@ namespace ImGuiImpl {
                 const bool customMenuOwnsNavigation =
                     g_externalFallbackHost || Config::GetSettings().useCustomMenu;
                 if (!wasVisible && customMenuOwnsNavigation &&
-                    ImGui::GetCurrentContext()) {
+                    useContext) {
                     // A menu-open press may still be physically held.  Every
                     // visibility transition gets a fresh release gate, not
                     // only the renderer's first initialization.
                     CustomMenu::Input::ResetEdges();
                 }
-                if (ImGui::GetCurrentContext()) {
+                if (useContext) {
                     ImGuiIO& io = ImGui::GetIO();
                     XInputShim::RefreshSnapshotOncePerFrame();
                     XInputShim::Snapshot padSnapshot{};
@@ -1083,7 +1215,7 @@ namespace ImGuiImpl {
                 ImGuiGui::RefreshLocalData();
             } else {
                 LogOut("[IMGUI] ImGui interface closed", true);
-                if (ImGui::GetCurrentContext()) {
+                if (useContext) {
                     ImGuiIO& io = ImGui::GetIO();
                     char buf[256];
                     _snprintf_s(buf, sizeof(buf), _TRUNCATE, "[IMGUI] Close: NavEnableGamepad=%d BackendHasGamepad=%d",
@@ -1190,7 +1322,13 @@ namespace ImGuiImpl {
                 return;
             }
 
-            if (!InitializeForHost(device, hwnd, false, true)) {
+            bool initialized = false;
+            {
+                DeviceRenderScope initialization(device);
+                initialized = initialization.Admitted()
+                    && InitializeForHost(device, hwnd, false, true);
+            }
+            if (!initialized) {
                 LogOut("[IMGUI] Failed to initialize ImGui for fallback window", true);
                 device->Release();
                 d3d9->Release();
@@ -1270,6 +1408,11 @@ namespace ImGuiImpl {
                     continue;
                 }
                 if (coop == D3DERR_DEVICENOTRESET) {
+                    DeviceRenderScope reset(device);
+                    if (!reset.Admitted()) {
+                        Sleep(16);
+                        continue;
+                    }
                     // While the game device holds exclusive fullscreen our
                     // windowed reset cannot succeed; after repeated
                     // failures stand down entirely instead of fighting the
@@ -1326,10 +1469,21 @@ namespace ImGuiImpl {
         }
         return InitializeForHost(device, FindEFZWindow(), true, false);
     }
+
+    bool IsBoundToDevice(IDirect3DDevice9* device) {
+        return g_imguiInitialized && g_imguiContext && g_d3dDevice == device
+            && !g_externalFallbackHost;
+    }
     
     void Shutdown() {
+        EfzOverlayResetGate::Access access(g_resetGate);
+        if (!access.Acquired()
+            || (g_imguiContext && g_imguiContextThread != GetCurrentThreadId()))
+            return;
         if (!g_imguiInitialized)
             return;
+
+        EfzScopedImGuiContext context(g_imguiContext);
         
         LogOut("[IMGUI] Shutting down ImGui", true);
         
@@ -1344,9 +1498,13 @@ namespace ImGuiImpl {
             }
         }
         
-        ImGui_ImplDX9_Shutdown();
+        if (g_d3dDevice) ImGui_ImplDX9_Shutdown();
         ImGui_ImplWin32_Shutdown();
-        ImGui::DestroyContext();
+        context.ForgetDestroyed(g_imguiContext);
+        ImGui::DestroyContext(g_imguiContext);
+        g_imguiContext = nullptr;
+        g_imguiContextThread = 0;
+        g_resetGate.UnbindBackend();
         
         g_imguiInitialized = false;
         g_imguiVisible = false;
@@ -1410,7 +1568,7 @@ namespace ImGuiImpl {
     }
 
     bool IsInitialized() {
-        return g_imguiInitialized;
+        return g_imguiInitialized && g_d3dDevice;
     }
 
     bool ShowFallbackWindow() {
@@ -1481,7 +1639,8 @@ namespace ImGuiImpl {
     }
     
     LRESULT WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-        if (!g_imguiInitialized || !TrainingUiInputActive()) return 0;
+        DeviceRenderScope input;
+        if (!input.Admitted() || !g_imguiInitialized || !TrainingUiInputActive()) return 0;
         ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
 
         if (g_imguiVisible) {
@@ -1581,6 +1740,8 @@ namespace ImGuiImpl {
     // (PostNewFrameDiagnostics removed)
 
     void RenderFrame() {
+        DeviceRenderScope render;
+        if (!render.Admitted()) return;
         // Safety check
         if (!g_imguiInitialized || !g_d3dDevice || g_isShuttingDown.load()) {
             return;

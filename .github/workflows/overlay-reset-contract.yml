@@ -1,0 +1,33 @@
+name: Overlay reset contract
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  portable-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Compile and run production reset gate tests
+        run: |
+          mkdir -p "$RUNNER_TEMP/overlay-reset"
+          c++ -std=c++17 -Wall -Wextra -Werror -Iinclude \
+            tests/overlay_reset_gate_tests.cpp \
+            -o "$RUNNER_TEMP/overlay-reset/gate-tests"
+          "$RUNNER_TEMP/overlay-reset/gate-tests"
+      - name: Compile and run context tests with real ImGui
+        run: |
+          c++ -std=c++17 -Iinclude -I3rdparty/imgui \
+            tests/overlay_context_scope_tests.cpp \
+            3rdparty/imgui/imgui.cpp 3rdparty/imgui/imgui_draw.cpp \
+            3rdparty/imgui/imgui_tables.cpp 3rdparty/imgui/imgui_widgets.cpp \
+            -o "$RUNNER_TEMP/overlay-reset/context-tests"
+          "$RUNNER_TEMP/overlay-reset/context-tests"

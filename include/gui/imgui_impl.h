@@ -1,6 +1,7 @@
 #pragma once
 #include <windows.h>
 #include <d3d9.h>
+#include "compat/overlay_reset_gate.h"
 #include "../3rdparty/imgui/imgui.h"
 #include "../3rdparty/imgui/backends/imgui_impl_dx9.h"
 #include "../3rdparty/imgui/backends/imgui_impl_win32.h"
@@ -10,8 +11,26 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 
 // ImGui implementation for EFZ
 namespace ImGuiImpl {
+    // Holds admission across the complete overlay pass. A null device selects
+    // this module's current host (for input and the standalone fallback).
+    class DeviceRenderScope {
+    public:
+        explicit DeviceRenderScope(IDirect3DDevice9* device = nullptr);
+        ~DeviceRenderScope();
+        DeviceRenderScope(const DeviceRenderScope&) = delete;
+        DeviceRenderScope& operator=(const DeviceRenderScope&) = delete;
+        bool Admitted() const { return admitted_; }
+        void Release();
+    private:
+        EfzOverlayResetGate::Access access_;
+        ImGuiContext* previousContext_ = nullptr;
+        bool admitted_ = false;
+    };
+
     // Initialize ImGui with DX9
+    // Called while DeviceRenderScope holds game-render admission.
     bool Initialize(IDirect3DDevice9* device);
+    bool IsBoundToDevice(IDirect3DDevice9* device);
     
     // Shutdown ImGui
     void Shutdown();

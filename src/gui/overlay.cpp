@@ -813,6 +813,14 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
         return oEndScene(pDevice);
     }
 
+    if (!pDevice) return oEndScene(pDevice);
+    ImGuiImpl::DeviceRenderScope render(pDevice);
+    const auto forward = [&]() -> HRESULT {
+        render.Release();
+        return oEndScene(pDevice);
+    };
+    if (!render.Admitted()) return forward();
+
     EndSceneHangScope _hangScope;
     SetEndScenePhase("XInput snapshot");
 
@@ -863,15 +871,10 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
             }
         }
     } _frameTimerScope;
-    if (!pDevice) {
-        SetEndScenePhase("original EndScene: null device");
-        return oEndScene(pDevice);
-    }
-
     SetEndScenePhase("TestCooperativeLevel");
     if (SkipOverlayForLostDevice(pDevice)) {
         SetEndScenePhase("original EndScene: lost device");
-        return oEndScene(pDevice);
+        return forward();
     }
 
     LogActiveD3D9DeviceOnce(pDevice);
@@ -883,7 +886,7 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
     // Only render on the actual 640x480 game surface
     if (!(rtW == 640 && rtH == 480)) {
         SetEndScenePhase("original EndScene: non-640 render target");
-        return oEndScene(pDevice);
+        return forward();
     }
 
     // Run external overlay renderers (e.g. ImprovedReplayMenu) as early as possible -
@@ -895,7 +898,7 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
 
     // Training's Win32 backend polls input during NewFrame. Do not run it
     // outside Practice Battle; separate registered renderers keep their call.
-    if (!XInputShim::IsPollingActive()) return oEndScene(pDevice);
+    if (!XInputShim::IsPollingActive()) return forward();
 
     // Thread-safe ImGui initialization (only once)
     SetEndScenePhase("ImGui initialization");
@@ -916,8 +919,14 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
         // If we lost the race or init failed, just continue to render pass
         if (!ImGuiImpl::IsInitialized()) {
             SetEndScenePhase("original EndScene: ImGui unavailable");
-            return oEndScene(pDevice);
+            return forward();
         }
+    }
+
+    // Validate device identity every frame. A device replacement must never
+    // render through the backend retained for the previous device or host.
+    if (!ImGuiImpl::IsBoundToDevice(pDevice) && !ImGuiImpl::Initialize(pDevice)) {
+        return forward();
     }
 
     // The title MISSIONS/TUTORIAL screens and the mission/lesson pause menu
@@ -951,7 +960,7 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
     if (io.DisplaySize.x <= 0.0f || io.DisplaySize.y <= 0.0f) {
         ImGui::EndFrame();
         SetEndScenePhase("original EndScene: minimized");
-        return oEndScene(pDevice);
+        return forward();
     }
 
     // Helper: fullscreen check
@@ -1051,7 +1060,7 @@ HRESULT WINAPI HookedEndScene(LPDIRECT3DDEVICE9 pDevice) {
     }
 
     SetEndScenePhase("original EndScene");
-    return oEndScene(pDevice);
+    return forward();
 }
 
 
@@ -1816,7 +1825,8 @@ bool DirectDrawHook::Initialize() {
     DetourTransactionBegin();
     DetourUpdateThread(GetCurrentThread());
     
-    DetourAttach(&(PVOID&)originalDirectDrawCreate, HookedDirectDrawCreate);
+    DetourAttach(&(PVOID&)originalDirectDrawCreate,
+                 reinterpret_cast<PVOID>(HookedDirectDrawCreate));
     
     LONG result = DetourTransactionCommit();
     if (result != NO_ERROR) {
@@ -1841,7 +1851,8 @@ void DirectDrawHook::Shutdown() {
     if (originalDirectDrawCreate) {
         DetourTransactionBegin();
         DetourUpdateThread(GetCurrentThread());
-        DetourDetach(&(PVOID&)originalDirectDrawCreate, HookedDirectDrawCreate);
+        DetourDetach(&(PVOID&)originalDirectDrawCreate,
+                     reinterpret_cast<PVOID>(HookedDirectDrawCreate));
         DetourTransactionCommit();
         isHooked = false;
         LogOut("[OVERLAY] DirectDrawCreate detour detached", true);
