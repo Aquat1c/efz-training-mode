@@ -1,0 +1,5 @@
+#include <windows.h>
+
+#define IDR_ITC_BOLT_BOLD_REGULAR 101
+
+IDR_ITC_BOLT_BOLD_REGULAR RCDATA "..\\..\\assets\\fonts\\ITC Bolt Bold Regular.otf"
